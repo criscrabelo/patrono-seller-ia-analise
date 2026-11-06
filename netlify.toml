@@ -1,0 +1,47 @@
+# Netlify — implantação do Patrono (P2.1 / P2.2).
+#
+# Next.js 15 é detectado automaticamente pelo adaptador oficial da Netlify
+# (OpenNext): não precisa de plugin declarado aqui.
+#
+# Nada aqui é segredo. As variáveis de ambiente ficam no painel/CLI da
+# Netlify, nunca neste arquivo.
+#
+# ── VARIÁVEIS QUE ESTE ARQUIVO PRESSUPÕE (definidas no painel) ──────────
+#   TRABALHO_LONGO_MODO=segundo-plano  → legenda, publicação e WhatsApp vão
+#       para a Background Function (lib/trabalho-longo.ts). Sem ela, rodam
+#       dentro da requisição e morrem aos 30 s.
+#   AGENDADOR_DOS_CRONS=netlify        → as Scheduled Functions passam a
+#       disparar os crons, e as rotas recusam o GitHub Actions. Ausente =
+#       nenhuma Scheduled Function dispara nada (lib/agendador.ts).
+#   CRON_PUBLICAR_ATIVO=true           → única forma de a rotina de
+#       publicação agendada disparar. Ausente = desligada.
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
+  # Telemetria do Next desligada no build.
+  NEXT_TELEMETRY_DISABLED = "1"
+
+# Funções próprias (fora do Next): a Background Function dos trabalhos
+# longos e as Scheduled Functions que só disparam as rotas de cron.
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# A Background Function fala com o banco: o motor do Prisma para o Linux
+# da Netlify (rhel-openssl-3.0.x, ver prisma/schema.prisma) precisa ir junto.
+[functions."trabalho-longo-background"]
+  included_files = [
+    "node_modules/.prisma/client/libquery_engine-rhel-openssl-3.0.x.so.node",
+    "node_modules/.prisma/client/schema.prisma",
+    # P2.17.12: o render do vídeo do modo assistido (LONGO_RENDER_VIDEO).
+    "node_modules/ffmpeg-static/ffmpeg",
+    # P2.18.6: fonte livre (Noto Sans, OFL) do texto na tela — o FFmpeg do Linux não tem drawtext; o texto vai por legenda ASS.
+    "node_modules/next/dist/compiled/@vercel/og/noto-sans-v27-latin-regular.ttf",
+  ]
+
+# Branch deploys e Deploy Previews são gratuitos (não consomem créditos);
+# deploys de PRODUÇÃO consomem.

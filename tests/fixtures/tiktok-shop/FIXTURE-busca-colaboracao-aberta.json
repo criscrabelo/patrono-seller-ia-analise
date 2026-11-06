@@ -1,0 +1,40 @@
+{
+  "_AVISO": "FIXTURE / MOCK DE TESTE INTERNO — NÃO É PRODUTO REAL, NÃO É RESPOSTA REAL DO TIKTOK SHOP. Formato hipotético para exercitar a normalização tolerante. Nunca exibir, importar ou apresentar como produto.",
+  "code": 0,
+  "message": "Success",
+  "request_id": "FIXTURE-REQ-0001",
+  "data": {
+    "next_page_token": "FIXTURE-PAGINA-2",
+    "total_count": 4,
+    "products": [
+      {
+        "product_id": "9000000000000000001",
+        "title": "FIXTURE Garrafa térmica de teste 500 ml",
+        "sale_price": { "amount": "59.90", "currency": "BRL" },
+        "commission_percent": 12,
+        "units_sold": 340,
+        "main_image_url": "https://fixture.invalid/img/garrafa.jpg",
+        "category_name": "Casa",
+        "detail_link": "https://shop.tiktok.com/view/product/9000000000000000001?region=BR",
+        "shop": { "name": "FIXTURE Loja Exemplo" }
+      },
+      {
+        "product_id": "9000000000000000002",
+        "title": "FIXTURE Organizador de teste",
+        "sale_price": { "amount": "39.90", "currency": "BRL" },
+        "commission": { "rate": 1500 },
+        "has_inventory": false,
+        "campo_novo_desconhecido": true
+      },
+      {
+        "product_id": "9000000000000000003",
+        "title": "FIXTURE Produto em dólar",
+        "sale_price": { "amount": "10.00", "currency": "USD" },
+        "commission_rate": "8"
+      },
+      {
+        "title": "FIXTURE item sem identificador (deve ser descartado)"
+      }
+    ]
+  }
+}

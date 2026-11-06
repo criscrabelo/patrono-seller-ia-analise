@@ -1,0 +1,15 @@
+# Dependências pinadas para o Patrono Generation Worker (Rodada 8).
+#
+# Instaladas SEMPRE dentro de um virtualenv isolado (.venv-digital-twin/),
+# nunca no Python do sistema. Nenhum peso de modelo é baixado por este
+# arquivo — os checkpoints do Chatterbox/MuseTalk vêm do Hugging Face Hub
+# na primeira execução real (fora deste repositório Git; ver
+# DIGITAL-TWIN-MODEL-LICENSES.md e DIGITAL-TWIN-WORKER.md).
+#
+# Versões verificadas via PyPI nesta rodada (pip index/download reais):
+chatterbox-tts==0.1.7
+# torch/torchaudio/transformers/diffusers vêm como dependências transitivas
+# do chatterbox-tts (ver DIGITAL-TWIN-MODEL-LICENSES.md) — pinadas pelo
+# próprio pacote (torch==2.6.0, torchaudio==2.6.0, transformers==5.2.0,
+# diffusers==0.29.0 na versão 0.1.7). Não instaladas neste ambiente de
+# desenvolvimento (ver DIGITAL-TWIN-BENCHMARK.md).

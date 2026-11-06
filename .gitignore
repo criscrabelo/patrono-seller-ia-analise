@@ -1,0 +1,68 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.test
+.env.production.local
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# claude code
+.claude/
+
+# Patrono Generation Worker (Rodada 8) — nunca versionar venv/pesos/cache de modelo
+/worker/.venv-digital-twin/
+/worker/model-cache/
+*.pt
+*.safetensors
+*.ckpt
+
+# Ambiente isolado de teste do Digital Twin (nunca versionar — contem chaves do projeto de teste)
+.env.digital-twin-test
+
+# Cache do Python do worker (gerado ao importar chatterbox_synthesize.py)
+__pycache__/
+*.pyc
+.verificacao-escrita-zero.json
+
+.env*
+
+# Netlify: artefatos de build e deploy local (podem conter o pacote das funções)
+.netlify/
+
+# Evidências jurídicas e prints de painel (P2.14.2): nunca versionar
+evidencias/
+
+# contrato de variáveis (só nomes e valores fictícios)
+!.env.example
+!.env.test.example

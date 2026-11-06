@@ -1,0 +1,51 @@
+# Integração contínua. Só valida (build + testes). NÃO faz deploy e não toca Production.
+name: CI
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: patrono
+          POSTGRES_PASSWORD: patrono
+          POSTGRES_DB: patrono_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U patrono" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://patrono:patrono@localhost:5432/patrono_test
+      DIRECT_URL: postgresql://patrono:patrono@localhost:5432/patrono_test
+      NEXTAUTH_SECRET: ci-somente-teste-nao-usar-em-producao
+      NEXTAUTH_URL: http://localhost:3100
+      NEXT_PUBLIC_SUPABASE_URL: https://exemplo-local.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: chave-falsa-para-build-local
+      SUPABASE_SERVICE_ROLE_KEY: chave-falsa-para-build-local
+      BASE_URL: http://localhost:3100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx prisma db push --skip-generate
+      - run: npm run build
+      - name: Servidor de teste
+        run: |
+          npx next start -p 3100 > servidor.log 2>&1 &
+          for i in $(seq 1 60); do curl -fs http://localhost:3100/login >/dev/null && break; sleep 2; done
+      - run: npm test
+      - if: failure()
+        run: tail -n 100 servidor.log || true

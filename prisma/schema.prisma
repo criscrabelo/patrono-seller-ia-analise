@@ -1,0 +1,2314 @@
+generator client {
+  provider = "prisma-client-js"
+  // "native" para o build local e a Vercel; "rhel-openssl-3.0.x" para as
+  // funções da Netlify (AWS Lambda, Amazon Linux 2023). Só o gerador: não
+  // muda o schema do banco nem gera migration.
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+  // P2.15.8: permite (não obriga) o driver `pg` (@prisma/adapter-pg). Sem
+  // `adapter` no construtor, o cliente continua exatamente como antes.
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Workspace — fundação de isolamento de dados.
+//
+// Hoje cada usuária tem exatamente UM workspace próprio (relação 1:1: ao
+// registrar, cria-se um workspace com ela como dona). Não existe ainda
+// conceito de equipe/organização compartilhando o mesmo workspace — isso é
+// modelado como `members: User[]` para não exigir outra migração quando
+// isso for necessário, mas por enquanto só a dona é membro do próprio
+// workspace.
+//
+// Todo registro operacional (produto, link, conteúdo, integração, programa
+// de afiliados, venda, comissão, log de auditoria) pertence a um workspace.
+// O isolamento é reforçado nas rotas de API filtrando sempre por
+// `workspaceId` (nunca confiando em filtro de tela) — ver
+// DOCUMENTACAO-PATRONO-SELLER.md.
+model Workspace {
+  id      String @id @default(cuid())
+  name    String
+  // Proveniência apenas — "quem fundou este workspace". De propósito SEM
+  // chave estrangeira: criar workspace e usuária é uma referência circular
+  // (a usuária dona do workspace dela mesma), então isso é gravado como
+  // texto simples em vez de relação, e resolvido em lib/workspace.ts.
+  // A fronteira de isolamento de verdade é `User.workspaceId` abaixo, que É
+  // uma chave estrangeira obrigatória.
+  ownerId String @unique
+
+  members User[] @relation("WorkspaceMembers")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ── Autopilot (Rodada 5) ──────────────────────────────────────────
+  // Kill switch: "PAUSAR AUTOMAÇÃO" por workspace. Nenhum job novo publica
+  // enquanto true; jobs em andamento devem respeitar isso antes da etapa
+  // externa (ver lib/autopilot.ts).
+  automationPaused Boolean @default(true)
+  // MANUAL: nada automático. DRY_RUN: roda o ciclo até READY_TO_PUBLISH mas
+  // nunca chama publicação real. AUTOMATIC: pode publicar de verdade quando
+  // todas as pré-condições da Rodada 5 forem atendidas.
+  automationMode String @default("MANUAL")
+
+  produtos          Produto[]
+  linksDinamicos    LinkDinamico[]
+  integracoes       Integracao[]
+  conteudos         Conteudo[]
+  affiliatePrograms AffiliateProgram[]
+  sales             Sale[]
+  commissions       Commission[]
+  auditLogs         AuditLog[]
+  eventosLink       EventoLink[]
+  publicacoes       Publicacao[]
+  automationJobs    AutomationJob[]
+
+  // ── Curadoria (P2.14.5.13) ─────────────────────────────────────────
+  candidatosDeProduto CandidatoDeProduto[]
+  perfilDaLoja        PerfilDaLoja?
+
+  // ── Fundações do Autopilot (P2.14.7 — Fase 0A) ──────────────────────
+  // SAFE MODE: o Patrono continua observando, mas não executa nenhuma ação
+  // irreversível (publicar, gastar, conectar). Entra sozinho em condição
+  // grave ou por decisão da titular; sai só por decisão humana.
+  safeModeAtivo  Boolean   @default(false)
+  safeModeMotivo String?
+  safeModeDesde  DateTime?
+
+  supervisorRuns   SupervisorRun[]
+  decisoes         DecisionRecord[]
+  eventos          DomainEvent[]
+  politicas        PolicyVersion[]
+  pedidosAprovacao ApprovalRequest[]
+  regrasAprovacao  ApprovalRule[]
+  custos           CostLedger[]
+  // P2.17.3: metas/missões do TikTok Shop registradas pela titular.
+  metasTikTokShop  MetaTikTokShop[]
+  // P2.17.4: resultados reais de vídeos (aprendizado; sem métrica inventada).
+  resultadosDeVideo VideoTikTokResultado[]
+  // P2.17.5: TikTok Mission Sync (execuções e histórico do que mudou).
+  sincronizacoesDeMetas SincronizacaoMetasTikTok[]
+  alteracoesDeMetas     AlteracaoMetaTikTok[]
+  // P2.17.6: dados oficiais de produto (enriquecimento) e histórico de mudanças.
+  dadosOficiaisDeProduto DadoOficialDeProduto[]
+  historicoDeProduto     HistoricoDadoDeProduto[]
+  // P2.17.10: modo assistido (10 primeiras publicações reais).
+  publicacoesAssistidas  PublicacaoAssistida[]
+  midiasDeProduto        MidiaDoProduto[]
+  autorizacoesDeMidiaDoVendedor AutorizacaoDeMidiaDoVendedor[]
+  importacoesCreatorCenter      ImportacaoCreatorCenter[]
+  alertasReducaoComissao        AlertaReducaoComissao[]
+  estadosDaContaNaPlataforma    EstadoDaContaNaPlataforma[]
+  contadoresDeCota              ContadorDeCotaDiaria[]
+  consumosDeCota                ConsumoDeCota[]
+  versoesDeRegraDePlataforma    VersaoDeRegraDePlataforma[]
+  execucoesDoProcessador        ExecucaoDoProcessador[]
+  pedidosAfiliadoTikTok         PedidoAfiliadoTikTok[]
+  historicoPedidosAfiliado      HistoricoPedidoAfiliadoTikTok[]
+  vitrineTikTokShop      VitrineTikTokShop[]
+  amostrasTikTokShop     AmostraTikTokShop[]
+  observacoesDeMercado   ObservacaoDeMercado[]
+
+  // ── Digital Twin (Rodada 7) ────────────────────────────────────────
+  digitalTwinProfiles DigitalTwinProfile[]
+  voiceProfiles       VoiceProfile[]
+  identityConsents    IdentityConsent[]
+  voiceConsents       VoiceConsent[]
+  digitalTwinAssets   DigitalTwinAsset[]
+  digitalTwinJobs     DigitalTwinJob[]
+  workerTokens        WorkerToken[]
+
+  // ── Machine Learning (Rodada 9, complemento) ────────────────────────
+  mlTrainingRuns      MLTrainingRun[]
+  mlModels            MLModel[]
+  mlPredictions       MLPrediction[]
+  mlFeatureSnapshots  MLFeatureSnapshot[]
+  creativeExperiments CreativeExperiment[]
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String?
+  role      String   @default("usuario")
+  status    String   @default("pendente")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Workspace em que esta usuária opera (hoje, sempre o próprio — ver nota
+  // em Workspace.ownerId). Esta É a fronteira de isolamento de dados.
+  workspaceId String
+  workspace   Workspace @relation("WorkspaceMembers", fields: [workspaceId], references: [id])
+
+  produtos       Produto[]
+  conteudos      Conteudo[]
+  integracoes    Integracao[]
+  linksDinamicos LinkDinamico[]
+  auditLogs      AuditLog[]
+}
+
+// Controle de quais módulos/telas ficam visíveis para cada papel (role).
+// O admin sempre vê tudo (não gera linha aqui); só existe registro pra
+// papéis restringíveis (hoje, só "usuario"). Ausência de linha = liberado
+// por padrão, pra nada quebrar antes de qualquer configuração.
+model ModuloPermissao {
+  id        String   @id @default(cuid())
+  role      String
+  modulo    String
+  liberado  Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+
+  @@unique([role, modulo])
+}
+
+model LinkDinamico {
+  id                String       @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace    @relation(fields: [workspaceId], references: [id])
+  userId            String
+  user              User         @relation(fields: [userId], references: [id])
+  produtoId         String
+  produto           Produto      @relation(fields: [produtoId], references: [id])
+  slug              String       @unique
+  plataforma        String
+  urlDestino        String       @db.Text
+  tipo              String       @default("afiliado")
+  comissao          Float?
+  precoAtual        Float?
+  cliques           Int          @default(0)
+  // DEPRECATED_LEGACY (Rodada 4): não é mais incrementado por nenhuma
+  // operação nova nem lido por nenhum indicador novo. Sale/Commission são
+  // a fonte única de vendas/comissões estruturadas — ver
+  // DOCUMENTACAO-PATRONO-SELLER.md §10.1. Mantido só para não quebrar
+  // registros antigos que dependiam dele antes desta rodada; não remover
+  // sem migrar qualquer leitura remanescente primeiro.
+  conversoes        Int          @default(0)
+  // DEPRECATED_LEGACY (Rodada 4) — ver `conversoes` acima.
+  receitaTotal      Float        @default(0)
+  ativo             Boolean      @default(true)
+  ultimaAtualizacao DateTime     @default(now())
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  eventos           EventoLink[]
+  sales             Sale[]
+
+  // P1.0 Etapa 2.b — a origem do clique.
+  //
+  // A FK fica DESTE lado, e nao em Publicacao.linkId, por dois motivos: e
+  // aqui que a opcionalidade mora (uma publicacao pode ir ao ar sem link
+  // rastreado, e um link pode existir sem publicacao — os 18 links por
+  // produto da tela "Meus Links"), e evita FK circular entre as duas
+  // tabelas.
+  publicacaoId String?
+  publicacao   Publicacao? @relation(fields: [publicacaoId, workspaceId], references: [id, workspaceId])
+
+  // UM INDICE SO, e ele basta — houve uma versao com dois.
+  //
+  // O composto sozinho garante "no maximo um link por publicacao", e a prova
+  // se apoia na FK acima: se L1 e L2 apontassem para a mesma Publicacao P, a
+  // FK obrigaria os dois a terem o workspaceId de P; entao o par
+  // (publicacaoId, workspaceId) seria identico e o segundo e recusado.
+  //
+  // Com publicacaoId NULL a FK nao e checada, o Postgres trata NULLs como
+  // distintos (NULLS DISTINCT, o padrao) e quantos links sem publicacao
+  // convivem — que e o necessario para os 18 por produto.
+  //
+  // Um `@unique` simples em publicacaoId seria redundante com este, e nao o
+  // contrario. Retry reusa o link; republicacao cria outra Publicacao.
+  @@unique([publicacaoId, workspaceId])
+
+  @@index([workspaceId])
+
+  // P2.14.7: métricas por produto em lote.
+  @@index([produtoId])
+}
+
+model EventoLink {
+  id String @id @default(cuid())
+
+  // P0.2 Bloco 2: isolamento EXPLICITO. Antes o workspace do evento so
+  // existia indiretamente, atraves de `link.workspaceId` — qualquer consulta
+  // que esquecesse o join leria clique de outro negocio. Com a coluna
+  // propria, a atribuicao filtra por workspace diretamente e o banco garante
+  // a integridade pela FK.
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  linkId     String
+  link       LinkDinamico @relation(fields: [linkId], references: [id])
+  tipo       String
+  plataforma String?
+  referer    String?
+  createdAt  DateTime     @default(now())
+
+  // Vendas atribuidas a ESTE clique. Um clique pode, em tese, preceder mais
+  // de uma venda; a atribuicao nunca e criada por inferencia (ver
+  // lib/atribuicao-clique.ts).
+  sales Sale[]
+
+  // Indice da consulta de atribuicao: workspace + link + ordem temporal.
+  @@index([workspaceId, linkId, createdAt])
+}
+
+model Integracao {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace @relation(fields: [workspaceId], references: [id])
+  userId       String
+  user         User      @relation(fields: [userId], references: [id])
+  plataforma   String
+  status       String    @default("desconectado")
+  accessToken  String?   @db.Text
+  refreshToken String?   @db.Text
+  tokenExpiry  DateTime?
+  accountId    String?
+  accountName  String?
+  extraData    Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([workspaceId, plataforma])
+  @@index([userId])
+}
+
+model Produto {
+  id              String         @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace      @relation(fields: [workspaceId], references: [id])
+  userId          String
+  user            User           @relation(fields: [userId], references: [id])
+  nome            String
+  categoria       String
+  preco           Float?
+  linkProduto     String?
+  descricao       String?
+  publicoAlvo     String[]
+  origemConteudo  String
+  tipoVenda       String
+  observacoes     String?
+  beneficios      String[]
+  pontosNegativos String[]
+  imagens         String[]
+  videos          String[]
+  status          String         @default("ativo")
+
+  // ── Identidade externa e sincronização automática (Rodada 11) ──────────
+  // AUTOMATION FIRST: a proprietária não deve cadastrar produto, preço,
+  // imagem, comissão ou disponibilidade à mão quando a plataforma oferecer
+  // isso por API oficial. Estes campos são o que torna essa importação
+  // IDEMPOTENTE — sem eles, cada sincronização duplicaria a vitrine inteira.
+  providerId  String? // 'tiktok-shop', 'amazon', 'mercado-livre'... (AFFILIATE_PROVIDER_REGISTRY)
+  externalId  String? // id do produto NA PLATAFORMA de origem
+  // MANUAL | TIKTOK_SHOWCASE | ... — alimenta o mapa de direitos de mídia
+  // (lib/media-rights-produto.ts). Nunca é inferido do provider: mídia de
+  // terceiro não pode entrar em vídeo como se fosse da proprietária.
+  origemDados String  @default("MANUAL")
+  sincronizadoEm DateTime?
+  // Quando sumiu da origem. Inativamos preservando histórico — `status`
+  // sozinho não distingue "a dona desativou" de "saiu da vitrine".
+  removidoDaOrigemEm DateTime?
+
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  conteudos       Conteudo[]
+  linksDinamicos  LinkDinamico[]
+  sales           Sale[]
+  commissions     Commission[]
+  candidatos      CandidatoDeProduto[]
+
+  // Garantia de idempotência no BANCO, não só na lógica — mesmo padrão de
+  // `Sale.idempotencyKey`. Em Postgres NULL não colide com NULL, então
+  // produto manual (providerId nulo) segue sem restrição.
+  @@unique([workspaceId, providerId, externalId])
+  @@index([workspaceId])
+  @@index([workspaceId, origemDados])
+}
+
+model Conteudo {
+  id                  String    @id @default(cuid())
+  workspaceId         String
+  workspace           Workspace @relation(fields: [workspaceId], references: [id])
+  userId              String
+  user                User      @relation(fields: [userId], references: [id])
+  produtoId           String
+  produto             Produto   @relation(fields: [produtoId], references: [id])
+  roteiro             String?   @db.Text
+  legendaTiktok       String?   @db.Text
+  legendaInstagram    String?   @db.Text
+  legendaYoutube      String?   @db.Text
+  legendaWhatsapp     String?   @db.Text
+  legendaFacebook     String?   @db.Text
+  legendaMarketplace  String?   @db.Text
+  hashtags            String[]
+  textoTela           String?   @db.Text
+  narracao            String?   @db.Text
+  trilhaSugerida      String?
+  promptVideoIA       String?   @db.Text
+  promptCurto         String?   @db.Text
+  promptNarracao      String?   @db.Text
+  chamadaAcao         String?
+  estilo              String?
+  duracao             Int?
+  redeSocial          String?
+  objetivo            String?
+  notaProduto         Float?
+  pontosPositivos     String[]
+  pontosNegativos     String[]
+  veredito            String?
+  status              String    @default("roteiro_gerado")
+  dataPublicacao      DateTime?
+  dataAgendamento     DateTime?
+  visualizacoes       Int       @default(0)
+  // DEPRECATED_LEGACY (P0.3): NENHUM codigo de producao incrementa este
+  // contador — em operacao ele vale 0 para sempre. A fonte de verdade de
+  // clique e `EventoLink`, consultada por lib/metricas-clique.ts. A coluna
+  // permanece para nao quebrar registros antigos; nao ler como contagem.
+  cliquesLink         Int       @default(0)
+  comentarios         Int       @default(0)
+  compartilhamentos   Int       @default(0)
+  taxaConclusao       Float?
+  alertasCompliance   Json[]
+  videoUrl            String?   @db.Text
+  videoRequestId      String?   @db.Text
+  videoErro           String?   @db.Text
+  publicacaoExternaId String?
+  erroPublicacao      String?   @db.Text
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  sales               Sale[]
+  publicacoes         Publicacao[]
+
+  @@unique([id, workspaceId])
+  @@index([workspaceId])
+
+  // P2.14.7: varredura de publicações agendadas por workspace.
+  @@index([workspaceId, status, dataAgendamento])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Programa × Operação × Integração — distinção de negócio aprovada
+// (design_handoff §6). As três coisas NÃO são sinônimos:
+//
+// - Programa    = a afiliada está cadastrada nesse programa? (status do
+//                 relacionamento com a plataforma, ex.: Shopee)
+// - Operação    = como o Patrono trabalha com esse programa hoje: manual
+//                 ou integrado. Nesta fase, sempre MANUAL.
+// - Integração  = existe conexão técnica real (token, API)? Nunca marcar
+//                 CONNECTED sem uma integração de verdade — mostrar sempre
+//                 "Manual" ou "Integração futura" enquanto não houver.
+model AffiliateProgram {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // Identificador técnico da plataforma (ex.: "shopee", "hotmart",
+  // "mercadolivre", "amazon", "tiktokshop", "outro"). Não é uma integração
+  // real — é só "de qual programa estamos falando".
+  platform String
+
+  // NOT_REGISTERED | REQUESTED | WAITING_APPROVAL | ACTIVE | NEEDS_CONFIGURATION
+  status String @default("NOT_REGISTERED")
+
+  // MANUAL | INTEGRATED — nesta fase do produto, sempre MANUAL.
+  operationMode String @default("MANUAL")
+
+  // NOT_AVAILABLE | FUTURE | CONFIGURED | CONNECTED | ERROR
+  // Nunca setar CONNECTED sem uma Integracao real por trás.
+  integrationStatus String @default("NOT_AVAILABLE")
+
+  notes String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sales       Sale[]
+  commissions Commission[]
+
+  @@unique([workspaceId, platform])
+  @@index([workspaceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Sale × Commission — venda e comissão são entidades separadas.
+// Regra de negócio: venda ≠ comissão. Uma venda registrada não vira
+// comissão recebida automaticamente; comissão prevista não é confirmada;
+// confirmada não é recebida; venda cancelada nunca aparece como confirmada.
+model Sale {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  productId String?
+  product   Produto? @relation(fields: [productId], references: [id])
+
+  affiliateProgramId String?
+  affiliateProgram   AffiliateProgram? @relation(fields: [affiliateProgramId], references: [id])
+
+  linkId String?
+  link   LinkDinamico? @relation(fields: [linkId], references: [id])
+
+  contentId String?
+  content   Conteudo? @relation(fields: [contentId], references: [id])
+
+  date   DateTime @default(now())
+  amount Float?
+
+  // PENDING | CONFIRMED | CANCELLED
+  status String @default("PENDING")
+
+  // manual | webhook (webhook não é usado ainda nesta fase)
+  source String @default("manual")
+
+  // ── P0.2 Bloco 1: PROVENIENCIA (nunca inferida) ─────────────────────
+  // REAL_OPERATION | SEED | TEST_FIXTURE | DEMO | SYNTHETIC_TEST | UNVERIFIED
+  // (lib/proveniencia.ts). `source` diz COMO a venda entrou; `dataOrigin`
+  // diz SE ela representa operacao comercial real. Sao perguntas diferentes:
+  // uma venda de teste tambem entra como "manual".
+  //
+  // O default e UNVERIFIED de proposito. Toda linha que ja existe no banco
+  // passa a valer como "origem nao demonstravel" — nunca como real. Promover
+  // historico a REAL_OPERATION por conveniencia seria ensinar o ML com dado
+  // de origem duvidosa, que e exatamente o que a regra permanente proibe.
+  // Fail-closed: perder dado de treino e melhor que contaminar o modelo.
+  dataOrigin String @default("UNVERIFIED")
+
+  // ── P0.2 Bloco 2: ATRIBUICAO (deterministica, nunca inventada) ───────
+  // Clique que originou esta venda. `null` quando nao houve atribuicao
+  // confiavel — e `attributionMethod` diz POR QUE. Nunca preenchido por
+  // palpite, correlacao estatistica ou inferencia de ML.
+  clickEventId String?
+  clickEvent   EventoLink? @relation(fields: [clickEventId], references: [id])
+
+  // Regra que produziu (ou recusou) a atribuicao acima — ver
+  // lib/atribuicao-clique.ts. Gravado SEMPRE, inclusive quando nao houve
+  // atribuicao: "nao atribuido" tambem e um resultado auditavel.
+  attributionMethod String?
+
+  notes String? @db.Text
+
+  // Idempotência persistente (Rodada 4): a mesma operação lógica de
+  // "registrar resultado" reenviada — duplo clique, retry de rede, timeout,
+  // refresh — nunca cria uma segunda Sale/Commission. A tela gera esta
+  // chave uma vez por tentativa de envio (ex.: crypto.randomUUID()) e a
+  // reenvia em cada retry até ter sucesso; o servidor localiza a Sale já
+  // criada com a mesma chave em vez de criar outra. Única por workspace;
+  // opcional porque nem toda chamada (ex.: um script interno) precisa
+  // gerar uma.
+  idempotencyKey String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  commissions Commission[]
+
+  @@unique([workspaceId, idempotencyKey])
+  @@index([workspaceId])
+  @@index([workspaceId, status])
+  @@index([workspaceId, dataOrigin])
+
+  // P2.14.7: atribuição e métricas por produto/link/clique.
+  @@index([productId])
+  @@index([linkId])
+  @@index([clickEventId])
+}
+
+model Commission {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  saleId String?
+  sale   Sale?   @relation(fields: [saleId], references: [id])
+
+  productId String?
+  product   Produto? @relation(fields: [productId], references: [id])
+
+  affiliateProgramId String?
+  affiliateProgram   AffiliateProgram? @relation(fields: [affiliateProgramId], references: [id])
+
+  expectedAmount  Float?
+  confirmedAmount Float?
+  receivedAmount  Float?
+
+  // EXPECTED | CONFIRMED | RECEIVED | REVERSED | CANCELLED
+  // P2.25: REVERSED = já confirmada/recebida e depois cancelada/reembolsada na origem (os valores
+  // confirmados ficam gravados — histórico não se apaga); CANCELLED = estimativa que nunca virou comissão.
+  // Estado e soma: SEMPRE pela fonte canônica lib/financeiro.ts.
+  status String @default("EXPECTED")
+
+  expectedAt  DateTime?
+  confirmedAt DateTime?
+  receivedAt  DateTime?
+
+  notes String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  historico HistoricoDeComissao[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, status])
+
+  // P2.14.7
+  @@index([saleId])
+}
+
+/// P2.25 — Cada mudança de estado/valor de uma comissão: o antes e o depois (nada é sobrescrito sem rastro).
+model HistoricoDeComissao {
+  id           String     @id @default(cuid())
+  workspaceId  String
+  commissionId String
+  commission   Commission @relation(fields: [commissionId], references: [id], onDelete: Cascade)
+  /// CREATOR_CENTER | MANUAL | VENDA_CANCELADA | VENDA_REATIVADA
+  origem       String
+  /// Idempotência: a mesma mudança (mesma origem e referência) nunca grava duas vezes. NULL = sem chave.
+  chave        String?
+  /// { status, expectedAmount, confirmedAmount, receivedAmount } antes (NULL = criação) e depois.
+  anterior     Json?
+  novo         Json
+  motivo       String?
+  registradoEm DateTime   @default(now())
+
+  @@unique([workspaceId, chave])
+  @@index([workspaceId, commissionId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Auditoria — registro simples de operações de escrita importantes.
+// Sem serviço externo, sem custo: só uma tabela no mesmo Postgres.
+// NUNCA gravar senha, token ou segredo em `metadata`.
+model AuditLog {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id])
+
+  // ex.: "produto.criado", "programa.alterado", "venda.registrada"
+  action String
+
+  // ex.: "Produto", "AffiliateProgram", "LinkDinamico", "Conteudo",
+  // "Sale", "Commission"
+  entityType String
+  entityId   String
+
+  // Dados não sensíveis relevantes ao evento (ex.: campos alterados).
+  // Nunca senha/token/segredo.
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@index([entityType, entityId])
+
+  // P2.14.7: última coleta e reservas de custo.
+  @@index([workspaceId, action, createdAt])
+}
+
+// ── Digital Twin (Rodada 7) ─────────────────────────────────────────────
+// Persistência real das fundações conceituais da Rodada 6. `workspaceId`
+// SEMPRE resolvido no servidor (session.user.workspaceId) — nunca aceito
+// do corpo/query da requisição. `ownerUserId`/`subjectUserId` são gravados
+// como texto simples (mesmo padrão de `Workspace.ownerId`), sem chave
+// estrangeira — não são o limite de isolamento; `workspaceId` é.
+
+model IdentityConsent {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  subjectUserId String // sempre a própria titular do workspace
+  purpose       String
+  version       String @default("v1")
+
+  // NOT_REQUESTED | GRANTED | REVOKED | EXPIRED (lib/digital-twin.ts)
+  status String @default("NOT_REQUESTED")
+
+  grantedAt DateTime?
+  revokedAt DateTime?
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([workspaceId])
+}
+
+model VoiceConsent {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  subjectUserId String
+  purpose       String
+  version       String @default("v1")
+  status        String @default("NOT_REQUESTED")
+
+  grantedAt DateTime?
+  revokedAt DateTime?
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([workspaceId])
+}
+
+model VoiceProfile {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  ownerUserId String
+  consentId   String? // aponta para VoiceConsent.id — sem FK Prisma (checagem feita em código)
+
+  provider     String? // preenchido só quando um provider real for usado (ex.: "chatterbox-tts")
+  modelVersion String?
+  language     String  @default("pt-BR")
+
+  // Kill switch — "DESATIVAR MEU AVATAR" também desativa a voz.
+  enabled Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId])
+}
+
+model DigitalTwinProfile {
+  id          String    @id @default(cuid())
+  workspaceId String    @unique // 1 perfil por workspace nesta fase (mesmo limite de "1 usuária = 1 workspace")
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  ownerUserId String
+  displayName String
+
+  identityConsentId String?
+  voiceProfileId    String?
+
+  enabled    Boolean   @default(false) // kill switch — "DESATIVAR MEU AVATAR" (identidade/voz)
+  approvedAt DateTime? // aprovação do PERFIL após a prévia (regra 42/43) — não é aprovação por vídeo
+
+  // Kill switch nº 3 (Rodada 9, regra 34) — independente de `enabled`
+  // (identidade/voz) e de `Workspace.automationPaused` (publicação). Pausa
+  // só o WORKER local: nenhum job novo é reivindicado enquanto true.
+  workerPaused Boolean @default(false)
+
+  // Aprovação única da VOZ (Rodada 9, regra 11) — separada da aprovação do
+  // perfil completo (approvedAt), porque a voz pode ser aprovada antes do
+  // avatar estar pronto.
+  voiceApprovedAt DateTime?
+
+  // ── Preferências globais (Rodada 8, regra 50) ──────────────────────
+  // Nunca perguntadas a cada postagem — o Autopilot só consulta isso uma
+  // vez por ciclo.
+  autoUseDigitalTwin Boolean @default(false)
+  autoUseVoice       Boolean @default(false)
+  allowFallback      Boolean @default(true)
+  priorityChannel    String  @default("tiktok")
+  defaultStyle       String  @default("presenter")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assets DigitalTwinAsset[]
+  jobs   DigitalTwinJob[]
+}
+
+model DigitalTwinAsset {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  profileId String
+  profile   DigitalTwinProfile @relation(fields: [profileId], references: [id])
+
+  // FACE_IMAGE | REFERENCE_VIDEO | VOICE_REFERENCE | CONSENT_EVIDENCE | GENERATED_PREVIEW
+  type String
+
+  // Caminho no bucket PRIVADO do Supabase Storage — nunca uma URL pública
+  // permanente. Acesso só via signed URL temporária (lib/supabase.ts).
+  storagePath String
+  mimeType    String
+  purpose     String?
+  active      Boolean @default(true)
+
+  // Retenção de prévias (Rodada 8, regra 42) — GENERATED_PREVIEW rejeitada/
+  // não usada expira e é limpa; referências permanentes (FACE_IMAGE,
+  // REFERENCE_VIDEO, VOICE_REFERENCE, CONSENT_EVIDENCE) ficam com null.
+  expiresAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([workspaceId, profileId])
+  @@index([expiresAt])
+}
+
+model DigitalTwinJob {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  profileId String
+  profile   DigitalTwinProfile @relation(fields: [profileId], references: [id])
+
+  // QUEUED | PREPARING_AUDIO | GENERATING_VOICE | GENERATING_AVATAR | LIP_SYNC
+  // | RENDERING | VALIDATING | READY | FAILED | CANCELLED
+  status String @default("QUEUED")
+
+  // VOICE_PREVIEW | AVATAR_PREVIEW | PRODUCT_PREVIEW | PUBLISH (Rodada 9) —
+  // distingue a FINALIDADE do job (ex.: prévia de voz sozinha nunca é
+  // rotulada como lip-sync/avatar).
+  jobType String @default("AVATAR_PREVIEW")
+
+  contentId     String? // ligação futura com Conteudo, quando existir
+  resultAssetId String?
+  error         String?
+  attempts      Int     @default(0)
+
+  // ── Job Queue real (Rodada 8) ──────────────────────────────────────
+  // Claim atômico: um worker só processa o job se conseguir gravar seu
+  // workerId (via UPDATE condicional — ver lib/digital-twin-job-queue.ts).
+  // heartbeatAt é renovado periodicamente enquanto processa; se parar de
+  // renovar por mais que lockTimeoutMs, o job é considerado travado e
+  // pode ser reclamado por outro worker (nunca fica preso para sempre).
+  workerId       String?
+  claimedAt      DateTime?
+  heartbeatAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId, status])
+  @@index([status, workerId])
+}
+
+// Saúde do(s) worker(s) locais de geração — só para a tela de Configurações
+// → Digital Twin, nunca para a Home (regra 37).
+model GenerationWorkerHealth {
+  id         String   @id @default(cuid())
+  workerId   String   @unique
+  online     Boolean  @default(true)
+  gpuDetected Boolean @default(false)
+  gpuName    String?
+  vramGB     Float?
+  version    String?
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+}
+
+// Worker Pairing (Rodada 9, regras 21-22): credencial própria do worker,
+// escopada a UM workspace — nunca a senha da usuária. Só o hash é
+// persistido; o token bruto é devolvido uma única vez na criação e nunca
+// mais recuperável (nem por quem tem acesso ao banco).
+model WorkerToken {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  tokenHash String @unique
+  label     String?
+
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+
+  @@index([workspaceId])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Machine Learning (Rodada 9, complemento — ML Real)
+//
+// Todo modelo/previsão é escopado por workspace (regra 39): dados de um
+// workspace nunca treinam/alimentam o modelo de outro. Um modelo global
+// agregando vários workspaces exigiria política de anonimização própria
+// — não implementado nesta rodada.
+// ═══════════════════════════════════════════════════════════════════
+
+// Uma execução de treinamento (pode ou não resultar num MLModel novo —
+// falha por dados insuficientes/erro também é registrada aqui).
+model MLTrainingRun {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  modelFamily    String // ex.: "conversion_probability"
+  datasetVersion String // versão/hash do snapshot de dados usado
+  status         String @default("RUNNING") // RUNNING | COMPLETED | FAILED (ver lib/ml-types.ts)
+
+  // Proveniência dos dados usados neste treinamento (correção pós-aprovação
+  // do complemento ML — nunca REQUIRED-inferida, sempre declarada por quem
+  // chama). Só REAL_OPERATION treina um modelo elegível para produção —
+  // ver lib/ml-types.ts (MLDataOrigin) e MACHINE-LEARNING.md.
+  dataOrigin String
+
+  sampleCount   Int
+  featureNames  String[]
+  metrics       Json? // {rocAuc, precision, recall, mae, rmse, ...}
+  baselineMetrics Json? // métricas do baseline determinístico, para o Promotion Gate comparar
+  notes         String? @db.Text
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  models MLModel[]
+
+  @@index([workspaceId, modelFamily])
+}
+
+// Um modelo treinado e versionado. Nunca vira ACTIVE sem passar pelo
+// ModelPromotionGate (lib/ml-model-registry.ts) — precisa superar o
+// baseline determinístico.
+model MLModel {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  family   String // ex.: "conversion_probability"
+  modelType String // ex.: "LOGISTIC_REGRESSION"
+  version  Int
+
+  trainingRunId          String?
+  trainingRun            MLTrainingRun? @relation(fields: [trainingRunId], references: [id])
+  trainingDate           DateTime
+  trainingDatasetVersion String
+
+  // Proveniência dos dados de treinamento — só um modelo treinado com
+  // dataOrigin = REAL_OPERATION pode ser promovido a ACTIVE
+  // (lib/ml-model-registry.ts, promoverModelo()). Um modelo TEST_FIXTURE/
+  // DEMO/SEED/SYNTHETIC_TEST existe só para validar o motor de ML
+  // (o "TEST_MODEL"), nunca para operar no workspace real.
+  dataOrigin String
+
+  features        String[]
+  metrics         Json
+  baselineMetrics Json?
+  status          String @default("CANDIDATE") // CANDIDATE | VALIDATED | ACTIVE | DEPRECATED | ROLLED_BACK
+
+  // Modelos desta rodada são pequenos o suficiente (poucos coeficientes)
+  // para ficar inline no próprio banco — `artifactPath` fica reservado
+  // para quando um modelo maior precisar de armazenamento externo.
+  artifactPath String?
+  artifact     Json?
+
+  promotedAt   DateTime?
+  deprecatedAt DateTime?
+  rolledBackAt DateTime?
+  createdAt    DateTime  @default(now())
+
+  predictions MLPrediction[]
+
+  @@unique([workspaceId, family, version])
+  @@index([workspaceId, family, status])
+}
+
+// Toda previsão feita pelo PatronoMLEngine (ou pelo fallback
+// determinístico) é registrada aqui — nunca "silenciosa" (regra 29, 37).
+model MLPrediction {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  modelRowId   String?
+  model        MLModel? @relation(fields: [modelRowId], references: [id])
+  modelFamily  String?
+  modelVersion Int?
+  decisionType String // RULE_BASED | STATISTICAL_LEARNING | MACHINE_LEARNING | MODEL_BASED
+
+  entityType String // ex.: "AffiliateOpportunity" | "Conteudo"
+  entityId   String?
+
+  inputFeatures Json
+
+  predictedConversionProbability Float?
+  expectedCommissionValue        Float?
+
+  createdAt DateTime @default(now())
+
+  @@index([workspaceId, entityType])
+  @@index([workspaceId, modelRowId])
+}
+
+// Snapshot de features versionado (regra 7). `label` só é preenchido
+// DEPOIS que o resultado (venda/comissão) é conhecido — nunca no momento
+// da extração das features, para nunca vazar informação futura (regra 31).
+model MLFeatureSnapshot {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  entityType     String // "Conteudo" | "Produto"
+  entityId       String?
+  featureVersion String
+
+  // Proveniência real do dado (MLDataOrigin, lib/ml-types.ts):
+  // REAL_OPERATION | TEST_FIXTURE | DEMO | SEED | SYNTHETIC_TEST. Nunca
+  // opcional — o MLReadinessGate de produção só conta REAL_OPERATION
+  // (regra pós-aprovação: dado de teste/fixture/demo/seed nunca conta
+  // para decidir se o workspace real está pronto para treinar/ativar um
+  // modelo).
+  dataOrigin String
+
+  features Json
+  label    Json?
+
+  capturedAt DateTime  @default(now())
+  labeledAt  DateTime?
+
+  @@index([workspaceId, entityType])
+
+  // P2.14.7: fechamento da janela de observação.
+  @@index([workspaceId, labeledAt])
+}
+
+// Teste A/B de criativo (regra 24) — hook, CTA, duração, avatar/B-roll,
+// etc. Estratégia de atribuição simples e auditável (epsilon-greedy).
+model CreativeExperiment {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  name      String
+  dimension String // "hook" | "cta" | "duration" | "avatar_vs_broll" | ...
+  variantA  Json
+  variantB  Json
+
+  assignmentStrategy String  @default("EPSILON_GREEDY")
+  epsilon            Float   @default(0.1)
+  status             String  @default("RUNNING") // RUNNING | CONCLUDED | CANCELLED
+
+  assignments Json[] @default([]) // [{ variant, entityId, assignedAt }]
+  resultsA    Json?
+  resultsB    Json?
+  winner      String? // "A" | "B"
+
+  startedAt   DateTime  @default(now())
+  concludedAt DateTime?
+
+  @@index([workspaceId, status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// P1.0 Etapa 2.b — a PUBLICACAO como entidade propria de distribuicao real.
+//
+// O mesmo conteudo pode ir ao ar mais de uma vez, em canais diferentes, com
+// resultados diferentes. Enquanto a unidade de observacao era `Conteudo`, a
+// segunda publicacao sobrescrevia a primeira e o historico se perdia.
+//
+// A cadeia que isto fecha:
+//   Conteudo -> Publicacao -> LinkDinamico -> EventoLink
+//   LinkDinamico -> Produto          (o destino continua sendo o produto)
+//
+// A partir daqui um clique responde: qual produto, qual publicacao, qual
+// conteudo, qual canal, qual tentativa.
+//
+// ── O QUE NAO VIRA COLUNA ───────────────────────────────────────────────
+// `produtoId`: derivado de `Conteudo.produtoId`. Duplicar criaria duas
+// verdades que podem divergir.
+//
+// `estadoDeRastreamento` (RASTREADA | NAO_RASTREADA_COM_FALLBACK |
+// NAO_PUBLICADA): inteiramente derivavel de `estado` + existencia do link.
+// Persistir seria manter um cache que pode contradizer as duas colunas de
+// onde ele sai. Ver `lib/rastreamento-da-publicacao.ts`.
+//
+// `publicacaoId` em Sale / EventoLink / Commission: derivavel por
+// Sale.clickEventId -> EventoLink.linkId -> LinkDinamico.publicacaoId.
+// Ver PROPOSTA_DE_ATRIBUICAO_DE_VENDA em lib/publicacao-contrato.ts.
+//
+// ── SEM BACKFILL ────────────────────────────────────────────────────────
+// Nenhuma Publicacao nasce retroativamente. O banco atual nao consegue
+// provar quantas vezes um conteudo foi publicado, em que canal de cada vez,
+// nem qual link pertenceu a qual publicacao. Inventar isso por slug seria
+// fabricar historico. Conteudo antigo fica sem Publicacao, e isso e o
+// registro honesto de que a informacao nao existe.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Vocabulario da maquina de estados, no BANCO.
+//
+// Vira um tipo nativo do Postgres, e o Prisma o gerencia — entao nao e a
+// constraint manual que desapareceria num `migrate reset`. Aqui vale porque
+// a tabela e NOVA: nenhuma linha precisa ser convertida.
+//
+// O que o enum garante e o VOCABULARIO, nao a maquina de estados. Gravar
+// 'PUBLICADA' passa a ser impossivel; gravar DISTRIBUIDA vindo de REMOVIDA
+// continua sendo trabalho de `validarTransicao()`, no contrato.
+//
+// O preco: o vocabulario passa a existir em dois lugares — aqui e em
+// ESTADOS_DA_PUBLICACAO, em lib/publicacao-contrato.ts. Ha teste que exige
+// que os dois sejam identicos, para que nao se afastem em silencio.
+//
+// `dataOrigin` deliberadamente NAO virou enum: ela compartilha vocabulario
+// com Sale.dataOrigin e Commission, que sao String. Converter uma so
+// fragmentaria o vocabulario da proveniencia em dois tipos.
+enum EstadoDaPublicacao {
+  PREPARADA
+  DISTRIBUINDO
+  DISTRIBUIDA
+  FALHOU
+  REMOVIDA
+}
+
+model Publicacao {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // FK COMPOSTA: o conteudo tem de ser do MESMO workspace. Sem isto, uma
+  // Publicacao do workspace A poderia apontar para Conteudo do B, e o
+  // isolamento dependeria de todo caminho de escrita lembrar de conferir.
+  contentId String
+  content   Conteudo @relation(fields: [contentId, workspaceId], references: [id, workspaceId])
+
+  // O destino, achatado em duas colunas (contrato: `destino`).
+  // `provider` e a plataforma (TIKTOK_SHOP, META, ...); `canal` e onde o
+  // post saiu (instagram, tiktok, ...). Sao coisas diferentes: um provider
+  // pode servir varios canais.
+  provider String
+  canal    String
+
+  // Idempotencia da TENTATIVA. Gerada por quem inicia e reenviada em cada
+  // retry — por isso ela distingue retry de republicacao, e nao depende de
+  // um campo do provider que as vezes nao existe.
+  chaveDaTentativa String
+
+  // Maquina de estados do contrato (Etapa 1):
+  // PREPARADA -> DISTRIBUINDO -> DISTRIBUIDA, mais FALHOU e REMOVIDA.
+  // DISTRIBUIDA NAO significa rastreada: uma publicacao pode estar
+  // DISTRIBUIDA e mesmo assim ter saido com o link direto do produto.
+  estado EstadoDaPublicacao @default(PREPARADA)
+
+  // Id no provider. NULL e estado normal: publicacao manual, provider que
+  // nao devolve id, ou processamento ainda em curso.
+  publicacaoExternaId String?
+
+  // Instante REAL da distribuicao, nunca o de "marcamos como publicado".
+  // NULL enquanto nao houver evidencia. E o marco de toda janela do ML.
+  distribuidaEm DateTime?
+
+  // Como se sabe que a publicacao aconteceu. Estado interno e afirmacao
+  // nossa; evidencia e recibo de alguem de fora. Ver
+  // TIPOS_DE_EVIDENCIA_DE_PUBLICACAO no contrato.
+  evidencia Json?
+
+  // Proveniencia do REGISTRO, mesmo vocabulario do P0.2.
+  dataOrigin String @default("UNVERIFIED")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  link LinkDinamico?
+
+  // Alvo da FK composta de LinkDinamico — o link tem de ser do mesmo
+  // workspace da publicacao.
+  @@unique([id, workspaceId])
+
+  // IDEMPOTENCIA PRIMARIA. Sempre existe, porque a chave e gerada por quem
+  // publica. Retry reenvia a mesma linha; republicacao gera outra.
+  @@unique([workspaceId, chaveDaTentativa])
+
+  // IDEMPOTENCIA EXTERNA, so quando o id do provider existe. No Postgres,
+  // UNIQUE trata NULLs como distintos (NULLS DISTINCT, o padrao), entao
+  // esta constraint ja vale SOMENTE quando `publicacaoExternaId` nao e
+  // nulo — varias publicacoes sem id externo convivem sem conflito. E o
+  // efeito de um indice parcial, sem precisar de SQL fora do schema.
+  @@unique([workspaceId, provider, publicacaoExternaId])
+
+  @@index([workspaceId, estado])
+  @@index([workspaceId, contentId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// P1.3 — Automation Queue persistente.
+//
+// ── POR QUE UMA TABELA NOVA, E NAO A QUE JA EXISTE ──────────────────────
+// `DigitalTwinJob` tem `profileId` como FK OBRIGATORIA para
+// `DigitalTwinProfile`, e cinco modulos dependem disso. Uma pendencia de
+// "conectar canal" ou "completar dado do produto" nao tem perfil de Digital
+// Twin nenhum. Hospeda-la ali exigiria tornar aquela FK opcional — afrouxar
+// uma garantia existente para um uso que nao tem relacao com ela.
+//
+// O que E reusado: o vocabulario de `lib/automation.ts`
+// (HUMAN_ACTION_REASONS, ESTADOS_DO_JOB) e o padrao de reivindicacao de
+// `lib/digital-twin-job-queue.ts` — FOR UPDATE SKIP LOCKED, heartbeat,
+// retomada de job travado e requeue por tentativas. Nenhuma fila
+// concorrente: esta tabela guarda pendencias operacionais, aquela guarda
+// jobs de render com GPU.
+//
+// ── IDEMPOTENCIA ────────────────────────────────────────────────────────
+// `@@unique([workspaceId, chave])`. A chave e deterministica e inclui o
+// hash do contexto, entao a mesma situacao reencontra a mesma linha e uma
+// mudanca MATERIAL gera chave nova — sem depender de ninguem lembrar de
+// conferir antes de inserir.
+enum EstadoDoAutomationJob {
+  PENDING
+  RUNNING
+  WAITING
+  SUCCEEDED
+  FAILED_RETRYABLE
+  FAILED_FINAL
+  CANCELLED
+}
+
+model AutomationJob {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // Tipo da dependencia, vindo de PROXIMAS_ACOES em lib/plano-de-acao.ts.
+  tipo String
+
+  // Chave deterministica de idempotencia. Ver `chaveDoJob()`.
+  chave String
+
+  estado EstadoDoAutomationJob @default(PENDING)
+
+  // Como a dona enxerga: AUTOMATIZAVEL | TENTANDO | AGUARDA_CONDICAO |
+  // EXIGE_HUMANO. E o que o Painel de Excecoes vai ler.
+  classe String
+
+  // Preenchido so quando `classe = EXIGE_HUMANO`. Vocabulario de
+  // HUMAN_ACTION_REASONS, em lib/automation.ts.
+  motivoHumano String?
+
+  // A que o job se refere. Generico de proposito: hoje e Produto, amanha
+  // pode ser Integracao ou Publicacao, sem migration nova.
+  entityType String
+  entityId   String
+
+  // Dados que descrevem a situacao. Nao entra segredo nem payload bruto.
+  contexto Json?
+
+  tentativas         Int       @default(0)
+  proximaTentativaEm DateTime?
+  ultimoErro         String?   @db.Text
+
+  // Reivindicacao pelo worker — mesmo padrao do DigitalTwinJob.
+  workerId    String?
+  claimedAt   DateTime?
+  heartbeatAt DateTime?
+
+  resolvidoEm DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ── INDICES DERIVADOS DAS QUERIES REAIS ───────────────────────────────
+  //
+  // Toda leitura desta fila e escopada por workspace: `listarPorWorkspace`
+  // e `reivindicar` recebem workspaceId OBRIGATORIO. Nao existe consulta
+  // global por estado, entao nenhum indice lidera por `estado`.
+  //
+  // A garantia de "mesma situacao, mesmo job". Tambem serve a busca da
+  // chave em `inserirOuReencontrar`.
+  @@unique([workspaceId, chave])
+
+  // Claim, ramos 1 e 2:
+  //   estado = PENDING
+  //   estado = FAILED_RETRYABLE AND proximaTentativaEm <= agora
+  // O prefixo (workspaceId) e (workspaceId, estado) vem de graca — por isso
+  // o indice (workspaceId, estado) separado foi REMOVIDO, era prefixo
+  // redundante deste.
+  @@index([workspaceId, estado, proximaTentativaEm])
+
+  // Claim, ramo 3: recuperacao de job abandonado.
+  //   estado = RUNNING AND heartbeatAt < limite
+  // Indice proprio porque a terceira coluna e outra; sem ele este ramo
+  // varreria todos os RUNNING do workspace.
+  @@index([workspaceId, estado, heartbeatAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Curadoria de produtos (P2.14.5.13 — Fase 2).
+//
+// O Patrono encontra candidatos, ranqueia com o motor de oportunidades
+// EXISTENTE (lib/motor-de-oportunidades.ts), mostra os 3 melhores e a
+// titular escolhe 1. Cada linha é um RETRATO do que o motor sabia na
+// coleta: score e explicação ficam gravados para a decisão ser auditável.
+//
+// Dado que a fonte não informa fica NULL — nunca 0, nunca estimado.
+// ─────────────────────────────────────────────────────────────────────────
+
+enum StatusDoCandidato {
+  NOVO // coletado e pontuado, ainda não mostrado
+  APRESENTADO // está entre os 3 mostrados à titular
+  ESCOLHIDO // escolhido; já era Produto do catálogo (nada a cadastrar)
+  DESCARTADO // a titular descartou
+  CADASTRADO // escolhido e virou Produto novo
+}
+
+model CandidatoDeProduto {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  // Identidade da origem. `chaveDeOrigem` evita duplicar o mesmo item em
+  // coletas seguidas: "produto:<id>", "<providerId>:<externalId>" ou
+  // "titular:<id>".
+  chaveDeOrigem String
+  // CATALOGO (Produto já existente), USER_PROVIDED (informado pela titular)
+  // ou o id de uma fonte autorizada (ex.: tiktok-shop), quando houver.
+  fonte         String
+  providerId    String?
+  externalId    String?
+  // Produto do catálogo de onde veio, ou o Produto criado na escolha.
+  produtoId     String?
+  produto       Produto? @relation(fields: [produtoId], references: [id])
+
+  nome             String
+  linkProduto      String?
+  imagem           String?
+  // Só exibida/usada quando o direito de uso foi verificado.
+  imagemAutorizada Boolean @default(false)
+  categoria        String?
+  preco            Float?
+
+  // Sinais de mercado — NULL quando a fonte não informa.
+  comissaoPercentual Float?
+  comissaoValor      Float?
+  vendas             Int?
+  velocidadeDeVendas Float? // vendas por dia, quando a fonte informar
+  avaliacao          Float?
+  numeroDeAvaliacoes Int?
+  estoque            Int?
+
+  // Retrato do motor na coleta (mesma fórmula da Fase 1).
+  score                Int
+  baseDeEvidencia      Int
+  aderencia            Int? // perfil + afinidade; NULL = desconhecida
+  aderenciaDoPerfil    Int? // 0–80
+  afinidade            Int      @default(0) // 0–20, a que entrou na nota
+  confianca            String
+  nivelDeRisco         String?
+  complianceBloqueante Boolean  @default(false)
+  publicacaoImpedida   Boolean  @default(false)
+  compradoPelaTitular  Boolean  @default(false)
+  usadoPelaTitular     Boolean  @default(false)
+  motivosPositivos     String[]
+  riscos               String[]
+  desconhecidos        String[]
+  porqueDestaPosicao   String[]
+
+  status  StatusDoCandidato @default(NOVO)
+  posicao Int? // 1–3 quando APRESENTADO
+
+  coletadoEm         DateTime
+  validoAte          DateTime
+  escolhidoEm        DateTime?
+  escolhidoPorUserId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([workspaceId, chaveDeOrigem])
+  @@index([workspaceId, status])
+}
+
+// Perfil da loja por workspace. Substitui, quando existir, o perfil padrão
+// de lib/config.ts (PERFIL_DA_LOJA), que continua como reserva. Os PESOS e
+// bônus do score NÃO ficam aqui: ficam no código, num único motor, e só
+// mudam com teste.
+model PerfilDaLoja {
+  id          String    @id @default(cuid())
+  workspaceId String    @unique
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  posicionamento             String
+  publico                    String
+  categoriasPrioritarias     String[]
+  categoriasDoCadastro       String[]
+  // { "calçados": ["sapato", ...], ... }
+  subcategoriasPrioritarias  Json
+  precoMinimo                Float
+  precoMaximo                Float
+  precoPremiumAte            Float
+  priorizarFacilDeDemonstrar Boolean  @default(true)
+  priorizarConteudoFaceless  Boolean  @default(true)
+  // [{ "nome": "MAC", "termos": [...], "diferenciaMaiusculas": true, ... }]
+  marcasPreferidas           Json
+  estilo                     String[]
+  marcadorDeUso              String   @default("#usei")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Fundações do Autopilot (P2.14.7 — Fase 0A).
+//
+// Supervisor com estados explícitos, livro de decisões e de eventos,
+// políticas versionadas, aprovações centralizadas, feature flags, custo e
+// recibos de webhook. Tudo por workspace, idempotente por chave.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Estados do ciclo do Supervisor. Transições válidas em lib/supervisor/estados.ts.
+enum EstadoDoRun {
+  PLANEJADO
+  DESCOBRINDO
+  VALIDANDO
+  RANQUEANDO
+  DECIDINDO
+  CRIANDO
+  AGUARDANDO_APROVACAO
+  AGENDANDO
+  PUBLICANDO
+  MEDINDO
+  APRENDENDO
+  CONCLUIDO
+  FALHOU
+  CANCELADO
+  PAUSADO
+}
+
+enum StatusDaAprovacao {
+  PENDENTE
+  APROVADA
+  REJEITADA
+  EXPIRADA
+  CANCELADA
+}
+
+/// Uma volta do ciclo autônomo. `chave` impede dois runs iguais (ex.: "diario:2026-10-10").
+model SupervisorRun {
+  id            String      @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace   @relation(fields: [workspaceId], references: [id])
+  chave         String
+  modo          String // MANUAL | ASSISTED | AUTOMATIC | SIMULACAO
+  estado        EstadoDoRun @default(PLANEJADO)
+  correlationId String      @unique
+  passo         Int         @default(0)
+  checkpoint    Json?
+  tentativas    Int         @default(0)
+  ultimoErro    String?
+  iniciadoEm    DateTime    @default(now())
+  atualizadoEm  DateTime    @updatedAt
+  concluidoEm   DateTime?
+
+  @@unique([workspaceId, chave])
+  @@index([workspaceId, estado])
+}
+
+/// Livro de decisões: o que foi decidido, por quem, com quais dados, quais
+/// faltavam, com que confiança, sob qual regra/política. Não é log técnico.
+model DecisionRecord {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace @relation(fields: [workspaceId], references: [id])
+  tipo              String
+  ator              String // PATRONO | TITULAR | SISTEMA
+  atorUserId        String?
+  correlationId     String?
+  runId             String?
+  entidadeTipo      String?
+  entidadeId        String?
+  decisao           String
+  confianca         Float?
+  entradas          Json?
+  ausentes          String[]
+  explicacao        String[]
+  regra             String? // regra/modelo + versão
+  politicaVersao    Int?
+  chaveIdempotencia String?
+  criadoEm          DateTime  @default(now())
+
+  @@unique([workspaceId, chaveIdempotencia])
+  @@index([workspaceId, criadoEm])
+  @@index([workspaceId, tipo, criadoEm])
+}
+
+/// Livro de eventos (outbox): fatos do domínio, versionados, idempotentes.
+/// Alimenta "O que o Patrono está fazendo agora" e o aprendizado.
+model DomainEvent {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace @relation(fields: [workspaceId], references: [id])
+  tipo              String
+  versao            Int       @default(1)
+  correlationId     String?
+  runId             String?
+  entidadeTipo      String?
+  entidadeId        String?
+  payload           Json
+  chaveIdempotencia String
+  ocorridoEm        DateTime  @default(now())
+  processadoEm      DateTime?
+  /// P2.22 — processador de eventos (só tipos com reação). null = ainda não visto pelo processador.
+  /// PROCESSANDO | PROCESSADO | RETRY | FALHOU | IGNORADO_ANTES_DO_CORTE | IGNORADO_LOOP
+  estadoProcessamento String?
+  tentativas          Int       @default(0)
+  ultimaTentativaEm   DateTime?
+  proximaTentativaEm  DateTime?
+  erroProcessamento   String?
+  /// Lease: quem pegou (token) e até quando (queda no meio → expira → retomado).
+  processandoPor      String?
+  processandoAte      DateTime?
+  resultadoProcessamento Json?
+  /// Linhagem (anti-loop): evento cuja reação gerou este, e a profundidade da cadeia.
+  causadoPorEventoId  String?
+  profundidade        Int       @default(0)
+
+  @@unique([workspaceId, chaveIdempotencia])
+  @@index([workspaceId, ocorridoEm])
+  @@index([workspaceId, tipo, ocorridoEm])
+  @@index([estadoProcessamento, proximaTentativaEm])
+}
+
+/// P2.22 — execuções do processador de eventos (observabilidade) e o CORTE de ativação por workspace
+/// (eventos anteriores ao corte não são reprocessados — registrado aqui, com contagem e motivo).
+model ExecucaoDoProcessador {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace @relation(fields: [workspaceId], references: [id])
+  /// EXECUCAO | CORTE | RETRY_MANUAL
+  tipo         String
+  worker       String
+  iniciadoEm   DateTime  @default(now())
+  terminadoEm  DateTime?
+  processados  Int       @default(0)
+  falhas       Int       @default(0)
+  retries      Int       @default(0)
+  ignorados    Int       @default(0)
+  detalhe      Json?
+
+  @@index([workspaceId, tipo, iniciadoEm])
+}
+
+/// Política versionada e imutável: cada mudança cria uma versão nova. No
+/// máximo uma ativa por workspace (índice parcial na migration).
+model PolicyVersion {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace @relation(fields: [workspaceId], references: [id])
+  versao          Int
+  regras          Json
+  motivo          String?
+  ator            String // TITULAR | SISTEMA
+  criadoPorUserId String?
+  ativa           Boolean   @default(false)
+  criadoEm        DateTime  @default(now())
+
+  @@unique([workspaceId, versao])
+  @@index([workspaceId, ativa])
+}
+
+/// Pedido único de intervenção humana ("Precisa de você").
+model ApprovalRequest {
+  id                 String            @id @default(cuid())
+  workspaceId        String
+  workspace          Workspace         @relation(fields: [workspaceId], references: [id])
+  tipo               String // PUBLICACAO | CUSTO | CONEXAO | PRODUTO | POLITICA
+  chave              String
+  titulo             String
+  resumo             String
+  porque             String[]
+  risco              String // BAIXO | MEDIO | ALTO
+  acaoProposta       Json
+  entidadeTipo       String?
+  entidadeId         String?
+  status             StatusDaAprovacao @default(PENDENTE)
+  correlationId      String?
+  expiraEm           DateTime?
+  decididoEm         DateTime?
+  decididoPorUserId  String?
+  decididoPorRegraId String?
+  motivoDaDecisao    String?
+  criadoEm           DateTime          @default(now())
+  atualizadoEm       DateTime          @updatedAt
+
+  @@unique([workspaceId, chave])
+  @@index([workspaceId, status, criadoEm])
+}
+
+/// Aprovação por regra: classe de ação, período ou permanente.
+model ApprovalRule {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace @relation(fields: [workspaceId], references: [id])
+  tipo            String
+  condicao        Json
+  efeito          String // APROVAR | REJEITAR
+  validaAte       DateTime? // null = permanente
+  ativa           Boolean   @default(true)
+  motivo          String?
+  criadoPorUserId String?
+  criadoEm        DateTime  @default(now())
+  revogadaEm      DateTime?
+
+  @@index([workspaceId, tipo, ativa])
+}
+
+/// Liga/desliga sem redeploy. `escopo` = "global" ou o id do workspace.
+model FeatureFlag {
+  id                  String   @id @default(cuid())
+  chave               String
+  escopo              String   @default("global")
+  ligada              Boolean  @default(false)
+  motivo              String?
+  atualizadoPorUserId String?
+  criadoEm            DateTime @default(now())
+  atualizadoEm        DateTime @updatedAt
+
+  @@unique([chave, escopo])
+}
+
+/// Livro de custo por operação (em centavos). Toda ação paga passa por aqui.
+model CostLedger {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace @relation(fields: [workspaceId], references: [id])
+  operacao          String
+  provider          String
+  estimadoCentavos  Int
+  realCentavos      Int?
+  moeda             String    @default("BRL")
+  status            String // RESERVADO | CONFIRMADO | CANCELADO | BLOQUEADO
+  motivo            String?
+  correlationId     String?
+  chaveIdempotencia String
+  criadoEm          DateTime  @default(now())
+  atualizadoEm      DateTime  @updatedAt
+
+  @@unique([workspaceId, chaveIdempotencia])
+  @@index([workspaceId, criadoEm])
+}
+
+/// Recibo de webhook: dedupe persistente (sobrevive a reinício/serverless).
+model WebhookReceipt {
+  id         String   @id @default(cuid())
+  provider   String
+  eventoId   String
+  recebidoEm DateTime @default(now())
+
+  @@unique([provider, eventoId])
+}
+
+
+/// P2.17.3 — Meta/missão do TikTok Shop (ex.: "publique 10 vídeos qualificados
+/// com produtos à venda até dd/mm e ganhe R$ X"). Registrada pela TITULAR: não
+/// há API pública confirmada de missões do TikTok Shop — nada é inventado.
+/// Concluída/expirada são DERIVADAS (realizada ≥ exigida; fim < agora).
+model MetaTikTokShop {
+  id                  String    @id @default(cuid())
+  workspaceId         String
+  workspace           Workspace @relation(fields: [workspaceId], references: [id])
+  nome                String
+  // VIDEOS_QUALIFICADOS | VIDEOS_COM_PRODUTO | ADICIONAR_PRODUTOS | SOLICITAR_AMOSTRAS | OUTRO
+  tipo                String
+  inicio              DateTime
+  fim                 DateTime
+  /// Recompensa em dinheiro (R$), quando houver. NULL = não é dinheiro ou não informada.
+  recompensaValor     Float?
+  recompensaDescricao String?
+  /// P2.17.3.1: campanha que agrupa várias metas (ex.: "Metas de Outubro") e
+  /// a recompensa TOTAL exibida pelo app para a campanha (repetida em cada meta
+  /// do grupo; o painel conta uma vez só). Divisão por meta: não informada.
+  campanha            String?
+  recompensaCampanha  Float?
+  quantidadeExigida   Int
+  quantidadeRealizada Int       @default(0)
+  requisitos          String?
+  // ATIVA | ARQUIVADA | ENCERRADA (sumiu da fonte em sincronizações seguidas)
+  status              String    @default("ATIVA")
+  // MANUAL | IMPORTADA_REVISADA | API_OFICIAL
+  origem              String    @default("MANUAL")
+  criadoPorUserId     String?
+  /// P2.17.5 — chave de idempotência da sincronização (id da missão na fonte,
+  /// ou campanha+tipo+nome+início normalizados no fallback por texto). NULL =
+  /// meta manual, que a sincronização nunca altera nem encerra.
+  chaveExterna        String?
+  /// Fonte da última sincronização (API_OFICIAL | TEXTO_REVISADO).
+  fonteSincronizacao  String?
+  ultimaSincronizacaoEm DateTime?
+  /// Primeira vez que a meta NÃO veio na fonte; volta a NULL se reaparecer.
+  ausenteDesde        DateTime?
+  ausenciasSeguidas   Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@unique([workspaceId, chaveExterna])
+  @@index([workspaceId, status])
+}
+
+/// P2.17.5 — Uma execução do TikTok Mission Sync (manual ou agendada).
+model SincronizacaoMetasTikTok {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace @relation(fields: [workspaceId], references: [id])
+  // API_OFICIAL | TEXTO_REVISADO | NENHUMA
+  fonte        String
+  // MANUAL | AGENDADA
+  gatilho      String
+  // OK | SEM_FONTE | EXIGE_TITULAR | ERRO
+  status       String
+  criadas      Int       @default(0)
+  atualizadas  Int       @default(0)
+  inalteradas  Int       @default(0)
+  ausentes     Int       @default(0)
+  encerradas   Int       @default(0)
+  mensagem     String?
+  /// Reação (frases do consultor) calculada logo após a sincronização.
+  reacao       Json?
+  userId       String?
+  iniciadaEm   DateTime  @default(now())
+  concluidaEm  DateTime?
+  alteracoes   AlteracaoMetaTikTok[]
+
+  @@index([workspaceId, iniciadaEm])
+}
+
+/// P2.17.5 — Histórico campo a campo: valor anterior → valor novo, com origem.
+model AlteracaoMetaTikTok {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace @relation(fields: [workspaceId], references: [id])
+  metaId          String
+  sincronizacaoId String?
+  sincronizacao   SincronizacaoMetasTikTok? @relation(fields: [sincronizacaoId], references: [id])
+  // CRIADA | campo alterado (quantidadeRealizada, fim, recompensaCampanha…) | AUSENTE | ENCERRADA | REAPARECEU
+  campo           String
+  valorAnterior   String?
+  valorNovo       String?
+  origem          String
+  createdAt       DateTime  @default(now())
+
+  @@index([workspaceId, metaId, createdAt])
+}
+
+
+/// P2.17.4 — Resultado REAL de um vídeo publicado no TikTok, para aprender qual
+/// estrutura/gancho/CTA/duração vende mais. Toda métrica é opcional: NULL = não
+/// medida (nunca zero inventado). `origemMetricas` diz de onde veio o número.
+model VideoTikTokResultado {
+  id               String    @id @default(cuid())
+  workspaceId      String
+  workspace        Workspace @relation(fields: [workspaceId], references: [id])
+  produtoId        String?
+  candidatoId      String?
+  estrutura        String
+  gancho           String
+  cta              String // A | B
+  duracaoSegundos  Int
+  publicadoEm      DateTime
+  urlDoVideo       String?
+  views            Int?
+  retencaoMedia    Float? // 0–1
+  tempoMedioSeg    Float?
+  cliquesProduto   Int?
+  ctr              Float? // 0–1
+  adicoesCarrinho  Int?
+  vendas           Int?
+  comissao         Float? // R$
+  metasIds         String[]
+  // MANUAL (titular) | LINK_RASTREADO | API_TIKTOK (quando existir conexão oficial)
+  origemMetricas   String
+  /// P2.17.10 — contexto do vídeo e receita (NULL = não medido, nunca zero).
+  canal            String    @default("tiktok")
+  nomeProduto      String?
+  categoria        String?
+  ctaTexto         String?
+  receita          Float? // R$ (comissão + recompensa atribuída, quando informada)
+  conteudoId       String?
+  publicacaoAssistidaId String? @unique
+  /// Id público do vídeo no TikTok (post_id) — só quando confirmado.
+  postId           String?
+  /// P2.21 — DNA CRIATIVO. Reaproveita o que já existe (sem campo paralelo): texto do gancho = `gancho`,
+  /// CTA = `ctaTexto` (+ `cta` A|B), duração = `duracaoSegundos`, canal = `canal`, categoria = `categoria`,
+  /// ângulo = `estrutura`, variante = PublicacaoAssistida.varianteId (via `publicacaoAssistidaId`).
+  /// Desconhecido = "UNKNOWN" (texto) ou null (sim/não) — nunca um palpite.
+  tipoDeGancho      String?
+  /// ALTA | MEDIA | BAIXA
+  confiancaDoGancho String?
+  /// Classificador e versão (ex.: REGRAS_PT_BR@2)
+  metodoDoGancho    String?
+  tipoDeCta         String?
+  /// IMAGENS_COM_TEXTO | VIDEO_COM_TEXTO | MISTO | UNKNOWN
+  formatoDoConteudo String?
+  /// IMAGEM | VIDEO | MISTA | UNKNOWN
+  tipoDeMidia       String?
+  /// PROPRIO | LICENCIADO | GERADO_PELO_PATRONO | FORNECEDOR | PLATAFORMA | DESCONHECIDA | UNKNOWN
+  origemDaMidia     String?
+  temRosto          Boolean?
+  temDemonstracao   Boolean?
+  temNarracao       Boolean?
+  temTextoNaTela    Boolean?
+  /// Quem afirmou cada valor: { campo: DERIVADO_DO_RENDER | INFORMADO_PELA_TITULAR | CLASSIFICADOR }
+  origemDoDna       Json?
+  /// Versão da extração (null = ainda não extraído; a extração preenche uma vez, idempotente)
+  versaoDoDna       String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([workspaceId, publicadoEm])
+}
+
+/// P2.17.10 — Uma publicação do MODO ASSISTIDO: o Patrono escolhe, gera e
+/// valida; a titular aprova, pede ajuste ou rejeita; o Patrono publica pelo
+/// caminho oficial (ou registra a publicação manual quando o TikTok bloqueia).
+model PublicacaoAssistida {
+  id                 String    @id @default(cuid())
+  workspaceId        String
+  workspace          Workspace @relation(fields: [workspaceId], references: [id])
+  /// 1..10 — atribuído só quando a publicação é CONFIRMADA.
+  ordem              Int?
+  // GERANDO | AGUARDANDO_MIDIA | VIDEO_NA_FILA | GERANDO_VIDEO | VIDEO_FALHOU | AGUARDANDO_APROVACAO | APROVADO | PUBLICANDO | PUBLICADO | FALHOU | REJEITADO | AJUSTE_PEDIDO
+  estado             String
+  /// P2.17.12: demonstração em TESTE (mídia FIXTURE). Nunca conta no sininho, na ordem 1..10 nem nos relatórios; não pode ser aprovada.
+  demonstracao       Boolean   @default(false)
+  versao             Int       @default(1)
+  canal              String    @default("tiktok")
+  candidatoId        String?
+  produtoId          String?
+  conteudoId         String?
+  nomeProduto        String
+  varianteId         String
+  estrutura          String
+  /// O que foi apresentado à titular nesta versão (produto, preço, comissão, gancho, legenda…).
+  apresentacao       Json
+  /// Resultado da checagem de qualidade desta versão (veredito, notas, motivos).
+  qualityGate        Json
+  /// Histórico: versões apresentadas, decisões, alterações e motivos.
+  historico          Json      @default("[]")
+  aprovadoDePrimeira Boolean?
+  versaoFinal        Json?
+  motivoEscolha      String
+  objetivoDoTeste    String
+  vezesQueOProdutoApareceu Int @default(0)
+  horarioPlanejado   DateTime?
+  metasIds           String[]
+  publicacaoId       String?
+  publishId          String?
+  postId             String?
+  urlPublicada       String?
+  // API_RASCUNHO | API_DIRETO | MANUAL_PELA_TITULAR
+  modoDePublicacao   String?
+  /// Por que não publicou sozinho (ex.: "BLOQUEADO PELO TIKTOK — falta …").
+  bloqueio           String?
+  erro               String?
+  publicadoEm        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([workspaceId, ordem])
+  @@index([workspaceId, estado])
+}
+
+/// P2.17.14+ — Vitrine (showcase) do TikTok Shop pela Affiliate Creator API.
+/// Um registro por produto: o produto só é "na vitrine" quando o Get
+/// Showcase Products CONFIRMA a presença — nunca porque o Add foi enviado.
+model VitrineTikTokShop {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace @relation(fields: [workspaceId], references: [id])
+  candidatoId   String?
+  productId     String
+  nomeProduto   String
+  // SELECIONADO | COLABORACAO_NAO_CONFIRMADA | ENVIADO | ENVIO_INCERTO | AGUARDANDO_APROVACAO | CONFIRMADO_NA_VITRINE | NAO_ENCONTRADO_NA_VITRINE | FALHOU | REMOCAO_ENVIADA | REMOCAO_INCERTA | REMOVIDO
+  estado        String
+  tentativas    Int       @default(0)
+  enviadoEm     DateTime?
+  verificadoEm  DateTime?
+  confirmadoEm  DateTime?
+  requestIdAdd  String?
+  requestIdGet  String?
+  detalhe       String?
+  historico     Json      @default("[]")
+  /// P2.17.15 — Gestor de Vitrine: por que entrou e a última decisão (ENTRAR | MANTER | ESCALAR | OBSERVAR | SUBSTITUIR | REMOVER).
+  motivoEntrada String?
+  decisao       String?
+  motivoDecisao String?
+  decididoEm    DateTime?
+  removidoEm    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([workspaceId, productId])
+  @@index([workspaceId, estado])
+}
+
+/// P2.17.12 — FONTE ÚNICA de mídia por produto. O renderizador só usa
+/// AUTORIZADA; a régua é a do preflight (lib/evidencia-de-midia.ts). Mídia
+/// autorizada é reaproveitada nas próximas variações — não se pede de novo.
+model MidiaDoProduto {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace @relation(fields: [workspaceId], references: [id])
+  produtoId     String?
+  candidatoId   String?
+  nomeProduto   String
+  // IMAGEM | VIDEO
+  tipo          String
+  url           String
+  // PROPRIO | LICENCIADO | GERADO_PELO_PATRONO | FORNECEDOR | PLATAFORMA | DESCONHECIDA
+  origem        String
+  /// Quem é o dono/autor do arquivo, nas palavras de quem declarou.
+  titularidade  String
+  /// O direito de uso declarado (ex.: "gravei eu mesma; uso livre nas minhas redes").
+  direitoDeUso  String
+  /// Registro de direito no formato do preflight (EvidenciaDeMidia) — ou null.
+  evidencia     Json?
+  // AUTORIZADA | NAO_CONFIRMADA | BLOQUEADA
+  status        String
+  motivoStatus  String
+  declaradoPor  String?
+  declaradoEm   DateTime?
+  /// Mídia FIXTURE de demonstração (só TESTE).
+  demonstracao  Boolean   @default(false)
+  usos          Int       @default(0)
+  ultimoUsoEm   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([workspaceId, url])
+  @@index([workspaceId, produtoId])
+  @@index([workspaceId, candidatoId])
+}
+
+/// P2.17.6 — Dados OFICIAIS de um produto (link/provider), atualizados pelo
+/// enriquecimento. Só entra valor de fonte oficial; ausente = NULL + motivo.
+model DadoOficialDeProduto {
+  id                 String    @id @default(cuid())
+  workspaceId        String
+  workspace          Workspace @relation(fields: [workspaceId], references: [id])
+  /// "<provider>:<externalId>" ou "link:<sha256 do link normalizado>".
+  chave              String
+  provider           String?
+  externalId         String?
+  linkProduto        String?
+  preco              Float?
+  precoAnterior      Float?
+  descontoPercentual Float?
+  menorPrecoObservado Float?
+  moeda              String?
+  comissaoPercentual Float?
+  comissaoValor      Float?
+  // FRACAO_CONFIRMADA | PERCENTUAL_CONFIRMADO | NAO_CONFIRMADA
+  unidadeDaComissao  String?
+  vendas             Int?
+  avaliacao          Float?
+  numeroDeAvaliacoes Int?
+  estoque            Int?
+  disponivel         Boolean?
+  categoria          String?
+  imagem             String?
+  loja               String?
+  // TIKTOK_SHOP_AFFILIATE_API | SHOPEE_AFFILIATE_API | NENHUMA
+  fonte              String
+  // OK | INDISPONIVEL | NAO_IDENTIFICADO | ERRO
+  situacao           String
+  /// Por que não há dado (frase curta para a tela) e o detalhe.
+  motivoCurto        String?
+  motivo             String?
+  consultadoEm       DateTime
+  /// Última consulta que trouxe dado oficial.
+  atualizadoEm       DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([workspaceId, chave])
+}
+
+/// P2.17.6 — "Comissão era 8%, agora está 12%": valor anterior → novo, por campo.
+model HistoricoDadoDeProduto {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace @relation(fields: [workspaceId], references: [id])
+  chave         String
+  campo         String
+  valorAnterior String?
+  valorNovo     String?
+  fonte         String
+  createdAt     DateTime  @default(now())
+
+  @@index([workspaceId, chave, createdAt])
+}
+
+/// P2.17.17 — Amostra do TikTok Shop como OPERAÇÃO (não cadastro). Guarda só a
+/// LOGÍSTICA (o que o TikTok/vendedor/transportadora decide); a produção
+/// (conteúdo → vídeo → aprovação → publicação → medição) é DERIVADA da
+/// publicação assistida ligada — uma verdade só. Data desconhecida = NULL.
+model AmostraTikTokShop {
+  id                   String    @id @default(cuid())
+  workspaceId          String
+  workspace            Workspace @relation(fields: [workspaceId], references: [id])
+  /// Identidade estável: "tiktok-shop:<productId>" ou "nome:<nome normalizado>". Nunca duplica.
+  chave                String
+  candidatoId          String?
+  produtoId            String?
+  productIdExterno     String?
+  nomeProduto          String
+  marketplace          String    @default("tiktok-shop")
+  /// GRATIS | REEMBOLSAVEL | NULL (não informado)
+  tipo                 String?
+  /// SOLICITADA | PENDENTE_APROVACAO | APROVADA | ENVIADA | RECEBIDA | REJEITADA | CANCELADA | CONCLUIDA
+  estado               String
+  /// Papéis do produto: PRODUTO_AFILIADO e/ou EQUIPAMENTO_OPERACIONAL.
+  papeis               String[]  @default(["PRODUTO_AFILIADO"])
+  /// Comissão vista no app (R$), com a fonte (TIKTOK_APP_MANUAL | OFICIAL_API) — NULL = não vista.
+  comissaoObservada    Float?
+  comissaoFonte        String?
+  solicitadaEm         DateTime?
+  aprovadaEm           DateTime?
+  enviadaEm            DateTime?
+  recebidaEm           DateTime?
+  rejeitadaEm          DateTime?
+  /// Prazo de conteúdo CONFIRMADO no app (NULL = não confirmado; o Patrono só estima, rotulado).
+  prazoConteudoEm      DateTime?
+  prazoConteudoFonte   String?
+  /// Missão: o app CONTOU esta solicitação? NULL = não confirmado (pedido ≠ missão computada).
+  missaoComputada      Boolean?
+  missaoComputadaEm    DateTime?
+  metaId               String?
+  publicacaoAssistidaId String?
+  campanha             String?
+  /// Por que pedimos (motivo comercial) e observações de quem registrou.
+  motivo               String?
+  observacao           String?
+  historico            Json      @default("[]")
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@unique([workspaceId, chave])
+  @@index([workspaceId, estado])
+}
+
+/// P2.17.18 — Evidência de mercado OBSERVADA À MÃO no app oficial do TikTok
+/// (Mais vendidos, Tendências, comissão estimada, amostra…). É um SNAPSHOT:
+/// pode mudar e vence em `validaAte`. Nunca é chamada de API oficial e nunca
+/// sobrescreve dado oficial — só preenche lacuna, rotulada pela fonte.
+model ObservacaoDeMercado {
+  id                  String    @id @default(cuid())
+  workspaceId         String
+  workspace           Workspace @relation(fields: [workspaceId], references: [id])
+  /// Mesma identidade da amostra/candidato: "tiktok-shop:<id>" ou "nome:<nome normalizado>".
+  chave               String
+  candidatoId         String?
+  nomeProduto         String
+  /// TIKTOK_APP_MANUAL | TIKTOK_RANKING_MANUAL | USER_PROVIDED (OFICIAL_API não entra aqui)
+  fonte               String
+  observadoEm         DateTime
+  validaAte           DateTime
+  /// "Mais vendidos" | "Tendências" | categoria do ranking, quando houver.
+  rankingCategoria    String?
+  rankingPosicao      Int?
+  vendasExibidas      Int?
+  /// Texto como apareceu (ex.: "10 mil+ vendidos"), quando não é número exato.
+  vendasExibidasTexto String?
+  comissaoExibida     Float?
+  comissaoPercentualExibida Float?
+  preco               Float?
+  estoque             Int?
+  /// GRATIS | REEMBOLSAVEL | NENHUMA | NULL
+  tipoDeAmostra       String?
+  observacao          String?
+  registradoPorUserId String?
+  createdAt           DateTime  @default(now())
+
+  @@index([workspaceId, chave, observadoEm])
+}
+
+// P2.18 — Limite de tentativas de acesso (login, "esqueci a senha", cadastro).
+// Sem workspace: acontece ANTES da autenticação. A chave é um hash (sha256)
+// de "conta:<e-mail normalizado>" ou "ip:<endereço>" — nem e-mail nem IP
+// ficam em texto. Linhas com mais de 24 h são apagadas no próprio registro.
+model TentativaDeAcesso {
+  id       String   @id @default(cuid())
+  chave    String
+  tipo     String // LOGIN | ESQUECI_SENHA | CADASTRO
+  sucesso  Boolean  @default(false)
+  criadoEm DateTime @default(now())
+
+  @@index([chave, tipo, criadoEm])
+  @@index([criadoEm])
+}
+
+/// P2.18.10 — Autorização de uso de mídia dada pelo VENDEDOR (loja), geral ou
+/// específica. É o "termo de licença" da mídia do vendedor: sem ela, mídia do
+/// vendedor é BLOQUEADA. Silêncio nunca é autorização. Nada é enviado ao
+/// vendedor pelo Patrono: a titular copia a mensagem e registra a resposta.
+model AutorizacaoDeMidiaDoVendedor {
+  id                    String    @id @default(cuid())
+  workspaceId           String
+  workspace             Workspace @relation(fields: [workspaceId], references: [id])
+  /// Identidade da loja: "<provider>:<shopId>" quando há id oficial; senão "nome:<nome normalizado>".
+  lojaChave             String
+  lojaId                String?
+  lojaNome              String
+  vendedorNome          String?
+  /// GERAL (todos os produtos da loja que a titular divulgar) | ESPECIFICA (um produto)
+  tipo                  String
+  /// Produto da autorização ESPECIFICA; na GERAL, os produtos associados à loja.
+  candidatoIds          String[]
+  /// PENDENTE | PENDENTE_DE_REVISAO | APROVADA | NEGADA | REVOGADA | EXPIRADA
+  status                String
+  canaisPermitidos      String[]
+  tiposDeMidia          String[]
+  edicaoPermitida       Boolean   @default(false)
+  cortesPermitidos      Boolean   @default(false)
+  legendasPermitidas    Boolean   @default(false)
+  ctaPermitido          Boolean   @default(false)
+  usoComercialPermitido Boolean   @default(false)
+  textoDaAutorizacao    String
+  respostaDoVendedor    String?
+  evidenciaUrl          String?
+  dataSolicitacao       DateTime
+  dataAprovacao         DateTime?
+  dataRevogacao         DateTime?
+  validaAte             DateTime?
+  observacoes           String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([workspaceId, lojaChave])
+  @@index([workspaceId, status])
+}
+
+/// P2.19 — Importação do relatório de pedidos de afiliado do Creator Center (CSV exportado pela titular).
+/// O mesmo arquivo (sha256) importado de novo não cria nada: devolve a importação existente.
+model ImportacaoCreatorCenter {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace @relation(fields: [workspaceId], references: [id])
+  userId            String?
+  nomeArquivo       String
+  sha256            String
+  /// CREATOR_CENTER_CSV (único formato aceito nesta etapa)
+  origem            String    @default("CREATOR_CENTER_CSV")
+  /// Proveniência do registro (lib/proveniencia.ts): USER_REPORTED pela tela; TEST_FIXTURE nos testes.
+  dataOrigin        String
+  /// coluna do arquivo → campo do Patrono (o que foi reconhecido)
+  mapeamento        Json
+  colunasIgnoradas  String[]
+  linhasTotal       Int
+  linhasNovas       Int
+  linhasAtualizadas Int
+  linhasIguais      Int
+  linhasRejeitadas  Int
+  /// [{ linha, motivo }] e avisos (status não reconhecido, regressão ignorada…)
+  ocorrencias       Json
+  importadoEm       DateTime  @default(now())
+  /// P2.19 — auditoria: o arquivo como chegou (texto do CSV ou base64 do XLSX), formato, cabeçalho e versão do parser.
+  formato           String    @default("CSV")
+  conteudoOriginal  String?   @db.Text
+  cabecalhoOriginal String[]
+  versaoDoParser    String    @default("creator-center@1")
+  /// false enquanto as linhas são gravadas; o mesmo arquivo de novo RETOMA (idempotente) em vez de duplicar
+  concluida         Boolean   @default(false)
+
+  historico HistoricoPedidoAfiliadoTikTok[]
+
+  @@unique([workspaceId, sha256])
+  @@index([workspaceId, importadoEm])
+}
+
+/// P2.19 — Um item de pedido de afiliado (pedido + SKU), na versão mais recente conhecida.
+/// Estado da comissão: ESTIMADA (pedido pago, pode cancelar) → NAO_LIQUIDADA (concluído, aguardando a
+/// liquidação de 3/7/15 dias) → LIQUIDADA (valor real). CANCELADA = cancelado/reembolsado (comissão 0).
+/// Só LIQUIDADA é receita confirmada; estimativa nunca vira receita.
+model PedidoAfiliadoTikTok {
+  id                   String    @id @default(cuid())
+  workspaceId          String
+  workspace            Workspace @relation(fields: [workspaceId], references: [id])
+  /// "<pedidoId>:<skuId|produtoIdExterno|nome>" — idempotência entre importações
+  chave                String
+  pedidoId             String
+  skuId                String?
+  produtoIdExterno     String?
+  produtoNome          String
+  lojaNome             String?
+  quantidade           Int?
+  valorBase            Float?
+  taxaComissao         Float?
+  /// VIDEO | LIVE | VITRINE | OUTRO | null (não informado)
+  tipoConteudo         String?
+  conteudoIdExterno    String?
+  estado               String
+  statusOriginal       String?
+  comissaoEstimada     Float?
+  comissaoLiquidada    Float?
+  dataPedido           DateTime?
+  dataLiquidacao       DateTime?
+  origem               String    @default("CREATOR_CENTER_CSV")
+  dataOrigin           String
+  primeiraImportacaoId String
+  ultimaImportacaoId   String
+  /// Ligações (nunca por nome): produto por id externo; vídeo pelo postId.
+  produtoId            String?
+  videoResultadoId     String?
+  candidatoId          String?
+  /// VINCULADO_POR_ID_EXTERNO | NAO_VINCULADO (sem correspondência única) | SEM_IDENTIFICADOR (o arquivo não trouxe o id)
+  vinculoProduto       String    @default("NAO_VINCULADO")
+  /// VINCULADO_POR_POST_ID | NAO_VINCULADO | SEM_IDENTIFICADOR
+  vinculoVideo         String    @default("NAO_VINCULADO")
+  /// Colunas do arquivo que o Patrono ainda não reconhece, com o valor da linha (nada é descartado em silêncio).
+  colunasExtras        Json?
+  /// Venda/comissão espelhadas em Sale/Commission (fonte única das telas de vendas).
+  saleId               String?   @unique
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  historico HistoricoPedidoAfiliadoTikTok[]
+
+  @@unique([workspaceId, chave])
+  @@index([workspaceId, estado])
+  @@index([workspaceId, dataPedido])
+}
+
+/// P2.19 — Cada mudança de um pedido entre importações (nada é sobrescrito sem rastro).
+model HistoricoPedidoAfiliadoTikTok {
+  id           String                  @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace               @relation(fields: [workspaceId], references: [id])
+  pedidoId     String
+  pedido       PedidoAfiliadoTikTok    @relation(fields: [pedidoId], references: [id])
+  importacaoId String
+  importacao   ImportacaoCreatorCenter @relation(fields: [importacaoId], references: [id])
+  /// CRIADO | ATUALIZADO | REGRESSAO_IGNORADA
+  tipo         String
+  anterior     Json?
+  novo         Json
+  registradoEm DateTime                @default(now())
+
+  @@index([workspaceId, pedidoId])
+}
+
+/// P2.19 — Alerta de redução de comissão. Regra oficial (TikTok Shop BR, Seller University, regra de 10/02/2026, conferida em 14/10/2026):
+/// aumento de taxa vale na hora; REDUÇÃO só vale 30 dias depois para produtos JÁ ADICIONADOS pelo afiliado.
+/// Sem saber se o produto já foi adicionado, o alerta diz isso (APLICABILIDADE_NAO_CONFIRMADA) — não inventa a regra.
+model AlertaReducaoComissao {
+  id                  String    @id @default(cuid())
+  workspaceId         String
+  workspace           Workspace @relation(fields: [workspaceId], references: [id])
+  candidatoId         String?
+  /// "<provider>:<externalId>" — identidade do produto (nunca o nome)
+  chaveProduto        String
+  nomeProduto         String
+  taxaAtual           Float
+  taxaNova            Float
+  /// Desde quando a taxa atual é conhecida (primeira observação), quando houver.
+  dataInicialDaTaxa   DateTime?
+  /// Quando a redução foi anunciada (informada) ou vista pelo Patrono (o anúncio pode ter sido antes).
+  dataDoAnuncio       DateTime
+  /// INFORMADA_PELA_TITULAR | OBSERVADA_PELO_PATRONO
+  fonteDoAnuncio      String
+  /// Quando a taxa nova passa a valer: anúncio + 30 dias, ou a data que o app mostra (informada).
+  dataEfetiva         DateTime?
+  /// CALCULADA_30_DIAS | INFORMADA_PELA_TITULAR
+  fonteDataEfetiva    String?
+  /// SIM | NAO | NAO_CONFIRMADO — a regra dos 30 dias só vale para produto já adicionado
+  produtoJaAdicionado String
+  /// ATIVO | EFETIVADO | CANCELADO | NAO_SE_APLICA | APLICABILIDADE_NAO_CONFIRMADA
+  status              String
+  /// INFORMATIVO | AVISO | URGENTE | null
+  nivel               String?
+  historico           Json      @default("[]")
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@unique([workspaceId, chaveProduto, dataDoAnuncio])
+  @@index([workspaceId, status])
+}
+
+/// P2.20 — ESTADO DA CONTA na plataforma (separado da REGRA DA PLATAFORMA).
+/// Uma linha por (workspace, plataforma, programa). Só guarda o que foi CONFIRMADO;
+/// o que não se sabe é "UNKNOWN" (texto) ou null (número) — nunca 0.
+/// A quota usada hoje vem do ContadorDeCotaDiaria e a restante é calculada (fonte única).
+model EstadoDaContaNaPlataforma {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace @relation(fields: [workspaceId], references: [id])
+  /// TIKTOK | TIKTOK_SHOP
+  plataforma        String
+  /// Identificador da conta na plataforma (ex.: @usuario) ou UNKNOWN
+  conta             String    @default("UNKNOWN")
+  /// Código do programa (ex.: PROGRAMA_PILOTO_VIDEOS_COMPRAVEIS)
+  programa          String
+  /// PARTICIPA | NAO_PARTICIPA | UNKNOWN
+  participacao      String    @default("UNKNOWN")
+  /// BR | GLOBAL | UNKNOWN
+  regiao            String    @default("UNKNOWN")
+  /// ATIVA | RESTRITA | SUSPENSA | UNKNOWN
+  statusDaConta     String    @default("UNKNOWN")
+  /// ELEGIVEL | NAO_ELEGIVEL | UNKNOWN
+  elegibilidade     String    @default("UNKNOWN")
+  /// Regra do catálogo a que a quota se refere (ex.: VIDEOS_COMPRAVEIS_POR_DIA)
+  regraDaQuota      String?
+  /// Quota diária vista na fonte; null = UNKNOWN (nunca 0 por falta de dado)
+  quotaDiaria       Int?
+  /// TELA_DO_APP | FONTE_OFICIAL | SUPORTE_TIKTOK | UNKNOWN
+  origem            String    @default("UNKNOWN")
+  dataDaFonte       DateTime?
+  verificadaEm      DateTime?
+  /// ALTA | MEDIA | BAIXA
+  confianca         String    @default("BAIXA")
+  observacoes       String?
+  revisarEm         DateTime?
+  expiraEm          DateTime?
+  historico         Json      @default("[]")
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([workspaceId, plataforma, programa])
+}
+
+/// P2.20 — contador diário (dia no fuso America/Sao_Paulo) de ações que consomem uma quota.
+/// Incremento atômico com a condição do limite (duas ações simultâneas não estouram).
+model ContadorDeCotaDiaria {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  plataforma  String
+  regra       String
+  /// Programa do limite (ou "PLATAFORMA")
+  programa    String
+  /// AAAA-MM-DD no fuso de Brasília
+  dia         String
+  usado       Int       @default(0)
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([workspaceId, plataforma, regra, programa, dia])
+}
+
+/// P2.20 — cada ação que consumiu quota (idempotente por ação; liberada se a ação falhar).
+model ConsumoDeCota {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  plataforma  String
+  regra       String
+  programa    String
+  dia         String
+  /// Ex.: publicacaoAssistida:<id>
+  acaoId      String
+  /// RESERVADA | CONFIRMADA | LIBERADA
+  estado      String    @default("RESERVADA")
+  limiteNaHora Int?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([workspaceId, regra, acaoId])
+  @@index([workspaceId, dia])
+}
+
+/// P2.20 — versões das regras da plataforma vistas por este workspace. Cada mudança cria
+/// uma versão nova (imutável) e gera o evento PLATFORM_RULE_UPDATED.
+model VersaoDeRegraDePlataforma {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  regraId     String
+  versao      Int
+  dados       Json
+  hash        String
+  /// CATALOGO | TITULAR
+  origem      String
+  createdAt   DateTime  @default(now())
+
+  @@unique([workspaceId, regraId, versao])
+  @@index([workspaceId, regraId])
+}

@@ -1,0 +1,229 @@
+# Agendamento dos crons do Patrono Seller — fora do vercel.json.
+#
+# ── POR QUE AQUI E NÃO NA VERCEL ────────────────────────────────────────
+# O plano Hobby só aceita cron diário. O `vercel.json` do repo pedia dois
+# agendamentos sub-diários, e por isso o projeto ficou INDEPLOYÁVEL: toda
+# tentativa de deploy é recusada na validação. Tirar os crons do
+# `vercel.json` destrava o deploy e tira a cadência de execução de dentro
+# do plano de hospedagem.
+#
+# ── ESTE ARQUIVO NÃO RODA AINDA ─────────────────────────────────────────
+# `schedule` do GitHub Actions só dispara na BRANCH PADRÃO (`main`).
+# Enquanto este arquivo viver só em branch de trabalho, ele é inerte: não
+# executa, não chama nada, não gasta minuto. Ele passa a valer no merge.
+#
+# ── UM DESPACHANTE, NÃO CINCO WORKFLOWS ─────────────────────────────────
+# O repositório é privado, então minuto de Actions é cota (2.000/mês no
+# plano Free) e cada job é cobrado arredondado para cima, ao minuto. Cinco
+# workflows separados gastariam ~1.620 min/mês (81% da cota) só para
+# disparar `curl`. Um despachante de hora em hora gasta ~720 min/mês (36%)
+# e cobre todos os horários.
+#
+# ── POR QUE O EXECUTOR CAIU DE 30 EM 30 PARA DE HORA EM HORA ────────────
+# `*/30` custaria 1.440 min/mês sozinho — 72% da cota, para ganhar meia
+# hora de latência. De hora em hora é a menor frequência segura: trabalho
+# enfileirado às 05:00 sai às 06:00 no pior caso, e a fila é idempotente,
+# então nada se perde no caminho.
+#
+# ── HORÁRIOS SÃO UTC ────────────────────────────────────────────────────
+# Cron do GitHub Actions é UTC, igual ao da Vercel. Os horários abaixo são
+# os MESMOS que estavam no `vercel.json`, para não mudar comportamento sem
+# querer. Atenção: 05:00 UTC é 02:00 em Brasília. Se a intenção era 05:00
+# no horário do Brasil, é trocar para `08` — mas isso é decisão, não
+# ajuste, e está registrada no relatório em vez de aplicada aqui.
+#
+# ── SEGREDO ─────────────────────────────────────────────────────────────
+# `CRON_SECRET` vem de GitHub Actions Secrets, nunca do repositório. Ele é
+# usado só no header `Authorization`, nunca na URL (URL entra em log de
+# proxy e de acesso). Nada o imprime.
+
+name: Patrono — crons
+
+on:
+  schedule:
+    # De hora em hora. O passo decide o que é devido nesta hora.
+    - cron: '0 * * * *'
+    # 04:30 UTC — só a limpeza de uploads órfãos (P2.12), no mesmo horário
+    # da Scheduled Function da Netlify. Um job a mais por dia (~30 min/mês).
+    - cron: '30 4 * * *'
+  workflow_dispatch:
+    inputs:
+      alvo:
+        description: 'Qual cron disparar agora'
+        required: true
+        type: choice
+        options:
+          - executar-fila
+          - oportunidades
+          - sincronizar-catalogo
+          - ml-janela-observacao
+          - publicar
+          - expurgar-tarefas
+          - limpar-uploads-orfaos
+          - sincronizar-metas-tiktok
+          - processar-eventos
+          - reconciliar
+          - limpar-biometria
+      modo:
+        description: 'ensaio = não grava nada; operacao = grava'
+        required: true
+        default: ensaio
+        type: choice
+        options:
+          - ensaio
+          - operacao
+
+# Duas rodadas simultâneas não ajudam e podem competir pela fila.
+concurrency:
+  group: patrono-crons
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  despachar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Disparar os crons devidos
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BASE_URL: ${{ vars.PATRONO_BASE_URL }}
+          # Fail-closed: o cron de publicar só roda se esta variável for
+          # exatamente 'true'. Ausente ou qualquer outra coisa = desligado.
+          PUBLICAR_ATIVO: ${{ vars.PATRONO_CRON_PUBLICAR_ATIVO }}
+          DISPATCH_ALVO: ${{ inputs.alvo }}
+          DISPATCH_MODO: ${{ inputs.modo }}
+          # Qual das agendas disparou (vazio no disparo manual).
+          AGENDA: ${{ github.event.schedule }}
+        run: |
+          set -euo pipefail
+
+          # ── INERTE ATÉ ESTAR CONFIGURADO ────────────────────────────
+          # Enquanto nem o segredo nem a URL existirem, este workflow não
+          # tem como operar — e não deve fingir que tem. Ele encerra em
+          # silêncio, sem chamar nada e sem marcar falha, porque um X
+          # vermelho de hora em hora vira ruído e ninguém olha mais.
+          #
+          # Meio configurado é outra história: isso é engano, não espera,
+          # e aí ele falha alto.
+          if [ -z "${CRON_SECRET:-}" ] && [ -z "${BASE_URL:-}" ]; then
+            echo "Ainda não configurado: faltam o secret CRON_SECRET e a variable PATRONO_BASE_URL."
+            echo "Nada foi chamado. Este workflow permanece inerte até os dois existirem."
+            exit 0
+          fi
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "PATRONO_BASE_URL existe mas o secret CRON_SECRET não. Configuração pela metade." >&2
+            exit 1
+          fi
+          if [ -z "${BASE_URL:-}" ]; then
+            echo "CRON_SECRET existe mas a variable PATRONO_BASE_URL não. Configuração pela metade." >&2
+            exit 1
+          fi
+
+          falhas=0
+
+          chamar() {
+            rota="$1"
+            querystring="${2:-}"
+            url="${BASE_URL}/api/cron/${rota}${querystring}"
+            echo "--- ${rota}${querystring}"
+            # O segredo vai só no header. A resposta vai para arquivo, e só
+            # um trecho dela é impresso — nenhuma resposta de cron carrega
+            # segredo, mas o corte evita despejar log gigante.
+            codigo=$(curl --silent --show-error --max-time 120 \
+              --output /tmp/resposta.json \
+              --write-out '%{http_code}' \
+              --header "Authorization: Bearer ${CRON_SECRET}" \
+              --header "x-patrono-agendador: github" \
+              "${url}") || codigo="000"
+            echo "HTTP ${codigo}"
+            head -c 2000 /tmp/resposta.json || true
+            echo ""
+            # A limpeza de órfãos só aceita o agendador declarado em
+            # AGENDADOR_DOS_CRONS no app. 409 = o agendador ativo não é o
+            # GitHub (ou nenhum foi declarado): recusa esperada, não falha.
+            if [ "${codigo}" = "409" ] && [ "${rota}" = "limpar-uploads-orfaos" ]; then
+              echo "${rota}: recusada pelo app — o GitHub não é o agendador declarado. Nada feito."
+              return 0
+            fi
+            if [ "${codigo}" != "200" ]; then
+              echo "FALHOU: ${rota} devolveu ${codigo}" >&2
+              falhas=$((falhas + 1))
+            fi
+          }
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            qs=""
+            if [ "${DISPATCH_MODO}" = "ensaio" ]; then qs="?modo=ensaio"; fi
+            # Expurgo: "operacao" pede execução; a rota ainda exige EXPURGO_TAREFAS_ATIVO=true.
+            if { [ "${DISPATCH_ALVO}" = "expurgar-tarefas" ] || [ "${DISPATCH_ALVO}" = "limpar-uploads-orfaos" ]; } && [ "${DISPATCH_MODO}" = "operacao" ]; then qs="?modo=execucao"; fi
+            echo "Disparo manual: ${DISPATCH_ALVO} (${DISPATCH_MODO})"
+            if [ "${DISPATCH_ALVO}" = "publicar" ] && [ "${PUBLICAR_ATIVO:-}" != "true" ]; then
+              echo "publicar está desligado (PATRONO_CRON_PUBLICAR_ATIVO != true). Nada feito."
+              exit 0
+            fi
+            chamar "${DISPATCH_ALVO}" "${qs}"
+          elif [ "${AGENDA}" = "30 4 * * *" ]; then
+            # 04:30 UTC — uploads do Digital Twin enviados e nunca
+            # confirmados (P2.12). Pede execução; sem
+            # LIMPEZA_UPLOADS_ORFAOS_ATIVA=true no app, é só ensaio.
+            chamar "limpar-uploads-orfaos" "?modo=execucao"
+          else
+            hora=$(date -u +%H)
+            echo "Hora UTC: ${hora}"
+
+            # Todo hora: o executor da fila. Era */30 no vercel.json.
+            chamar "executar-fila"
+
+            # A cada 3 h (P2.36; antes toda hora): processador de eventos (P2.22). A rota só
+            # roda com PROCESSADOR_DE_EVENTOS_AGENDADO=true no app e só nos workspaces
+            # ativados; sem isso responde "rotina desligada" e não toca em nada.
+            if [ $((10#${hora} % 3)) -eq 0 ]; then chamar "processar-eventos"; fi
+
+            # A cada 6 h (P2.36; antes toda hora): reconciliação operacional (P2.28). A rota só
+            # roda com RECONCILIACAO_AGENDADA=true no app; sem isso responde "rotina
+            # desligada". Corrige só o que é seguro; nada publica nem apaga.
+            if [ $((10#${hora} % 6)) -eq 0 ]; then chamar "reconciliar"; fi
+
+            # 05:00 UTC — ciclo diário de oportunidades.
+            if [ "${hora}" = "05" ]; then chamar "oportunidades"; fi
+
+            # 06:00, 12:00 e 18:00 UTC — sincronização de catálogo.
+            if [ "${hora}" = "06" ] || [ "${hora}" = "12" ] || [ "${hora}" = "18" ]; then
+              chamar "sincronizar-catalogo"
+            fi
+
+            # 03:00 UTC — janela de observação do ML.
+            if [ "${hora}" = "03" ]; then chamar "ml-janela-observacao"; fi
+
+            # 04:00 UTC — retenção dos registros de tarefas (P2.9). Pede
+            # execução; sem EXPURGO_TAREFAS_ATIVO=true no app, é só ensaio.
+            if [ "${hora}" = "04" ]; then chamar "expurgar-tarefas" "?modo=execucao"; fi
+
+            # 04:00 UTC — retenção do material biométrico (P2.33.1).
+            # A rota só roda com LIMPEZA_BIOMETRICA_AGENDADA=true no app; sem isso
+            # responde "rotina desligada". Só apaga prévia/narração vencida e não aprovada.
+            if [ "${hora}" = "04" ]; then chamar "limpar-biometria"; fi
+
+            # 09:00 UTC (06:00 em Brasília) — TikTok Mission Sync (P2.17.5).
+            # A rota só roda com TIKTOK_MISSOES_SYNC_AGENDADA=true no app;
+            # sem isso responde "rotina desligada" e não toca em nada.
+            if [ "${hora}" = "09" ]; then chamar "sincronizar-metas-tiktok"; fi
+
+            # 12:00 UTC — publicar. Desligado até decisão explícita.
+            if [ "${hora}" = "12" ]; then
+              if [ "${PUBLICAR_ATIVO:-}" = "true" ]; then
+                chamar "publicar"
+              else
+                echo "--- publicar: DESLIGADO (PATRONO_CRON_PUBLICAR_ATIVO != true)"
+              fi
+            fi
+          fi
+
+          if [ "${falhas}" -gt 0 ]; then
+            echo "${falhas} chamada(s) falharam." >&2
+            exit 1
+          fi
+          echo "Todas as chamadas devidas nesta hora responderam 200."

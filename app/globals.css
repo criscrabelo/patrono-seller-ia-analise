@@ -1,0 +1,106 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+@layer base {
+  :root {
+    --background: 225 35% 6%;
+    --foreground: 45 20% 96%;
+    --card: 225 35% 9%;
+    --card-foreground: 45 20% 96%;
+    --popover: 225 35% 9%;
+    --popover-foreground: 45 20% 96%;
+    --primary: 225 40% 17%;
+    --primary-foreground: 45 20% 96%;
+    --secondary: 225 35% 13%;
+    --secondary-foreground: 45 20% 96%;
+    --muted: 225 35% 13%;
+    --muted-foreground: 225 15% 55%;
+    --accent: 47 100% 48%;
+    --accent-foreground: 225 40% 8%;
+    --destructive: 0 84% 70%;
+    --destructive-foreground: 45 20% 96%;
+    --border: 225 35% 16%;
+    --input: 225 35% 16%;
+    --ring: 47 100% 48%;
+    --radius: 0.5rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', sans-serif;
+  }
+
+  /* Mantém os campos autopreenchidos pelo Chrome com o fundo escuro do tema
+     (senão o Chrome pinta de azul-claro e some com o ícone de olho e o visual). */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active {
+    -webkit-text-fill-color: hsl(var(--foreground));
+    -webkit-box-shadow: 0 0 0 1000px hsl(var(--background)) inset;
+    box-shadow: 0 0 0 1000px hsl(var(--background)) inset;
+    caret-color: hsl(var(--foreground));
+    transition: background-color 9999s ease-in-out 0s;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-primary rounded-full;
+  }
+}
+
+@layer utilities {
+  .sidebar-item {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors;
+    @apply text-white/70 hover:text-white hover:bg-white/10;
+  }
+
+  .sidebar-item.active {
+    @apply text-accent bg-accent/15 hover:bg-accent/25;
+  }
+
+  /* P2.17.13: subitem — menor que o primeiro nível, mas o MESMO padrão entre si, com estado ativo visível. */
+  .sidebar-subitem {
+    @apply flex items-center gap-2.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors;
+    @apply text-white/60 hover:text-white hover:bg-white/10;
+  }
+
+  .sidebar-subitem.active {
+    @apply text-accent bg-accent/10;
+  }
+
+  .card-stat {
+    @apply rounded-xl border border-border bg-card p-4 lg:p-5;
+  }
+
+  /* P2.19: Programas e Resultados usavam "input" sem a classe existir (campos sem estilo no tema escuro). */
+  .input {
+    @apply rounded-md border border-border bg-background px-3 py-2 text-sm text-white placeholder:text-muted-foreground
+           focus:outline-none focus:ring-2 focus:ring-accent/50 disabled:opacity-50;
+    color-scheme: dark;
+  }
+
+  .badge-status {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+
+  .copy-btn {
+    @apply inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs
+           text-muted-foreground hover:text-foreground hover:border-accent/50 transition-colors;
+  }
+}
